@@ -156,6 +156,7 @@
     skeleton();
     const [b, p, st] = await Promise.all([fetchEnc("data/book.enc"), fetchEnc("data/prices.enc"), fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null)]);
     S.book = await decrypt(key, b);
+    try { S.hist = await decrypt(key, await fetchEnc("data/history.enc")); } catch (e) { S.hist = {}; }
     const pr = await decrypt(key, p);
     S.prices = pr.prices || {}; S.pricesAt = pr.at; S.status = st;
     S.key = key;
@@ -224,6 +225,7 @@
       }
       if (st.book_built_at && S.book && st.book_built_at !== S.book.built_at) {
         S.book = await decrypt(S.key, await fetchEnc("data/book.enc")); changed = true;
+        try { S.hist = await decrypt(S.key, await fetchEnc("data/history.enc")); S._hm = {}; } catch (e) {}
       }
       S.status = st;
       if (changed) { render(); setTimeout(() => { S.flash = {}; document.querySelectorAll(".flash-up,.flash-down").forEach(n => n.classList.remove("flash-up", "flash-down")); }, 1800); }
@@ -360,9 +362,9 @@
   function stackTables(root) {
     root.querySelectorAll("table").forEach(t => {
       t.classList.add("stack");
-      const heads = Array.from(t.querySelectorAll("thead th")).map(th => th.textContent.trim());
+      const heads = Array.from(t.querySelectorAll(":scope > thead > tr > th")).map(th => th.textContent.trim());
       const fallback = t.dataset.labels ? t.dataset.labels.split("|") : [];
-      t.querySelectorAll("tbody tr").forEach(tr => {
+      t.querySelectorAll(":scope > tbody > tr").forEach(tr => {
         Array.from(tr.children).forEach((td, i) => {
           const lab = heads[i] || fallback[i] || "";
           if (lab && !td.hasAttribute("data-label")) td.setAttribute("data-label", lab);
@@ -700,12 +702,103 @@
     if (!t.best.length) return "Units × latest price, split by bucket";
     return "Last move " + ARROW(t.d) + " " + inr(t.d, { sign: true }) + " · best " + f(t.best[0]) + " · worst " + f(t.worst[0]);
   }
-  // ---- view 2
+  // ---- view 2: holdings, one row per instrument per bucket, expandable to its purchases; value over time
+  const WINDOWS = [["1D", 1], ["1W", 7], ["1M", 30], ["3M", 91], ["6M", 182], ["1Y", 365], ["All", 99999]];
+  const DAY = 86400000;
+  function histMap(key) {          // key → sorted [[ms, price]] with today's live price appended
+    S._hm = S._hm || {};
+    if (S._hm[key] && S._hm[key].at === S.pricesAt) return S._hm[key].pts;
+    const h = (S.hist || {})[key]; const pts = [];
+    if (h && h.p) { const d0 = Date.parse(h.s + "T00:00:00+05:30"); h.d.forEach((off, i) => pts.push([d0 + off * DAY, h.p[i]])); }
+    const live = S.prices[key];
+    if (live && live.p) { const t = Date.parse(ymd(istNow()) + "T00:00:00+05:30"); if (!pts.length || pts[pts.length - 1][0] < t) pts.push([t, live.p]); else pts[pts.length - 1][1] = live.p; }
+    S._hm[key] = { at: S.pricesAt, pts };
+    return pts;
+  }
+  function priceAt(pts, t) {        // last price on or before t (carry forward); first price if t is earlier
+    if (!pts.length) return null;
+    let lo = 0, hi = pts.length - 1;
+    if (t < pts[0][0]) return pts[0][1];
+    while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (pts[mid][0] <= t) lo = mid; else hi = mid - 1; }
+    return pts[lo][1];
+  }
+  // parts: [{key, units, constant}] → [[ms, value]] for the chosen window and granularity
+  function seriesFor(parts) {
+    const win = (WINDOWS.find(w => w[0] === S.win) || WINDOWS[2])[1];
+    const today = Date.parse(ymd(istNow()) + "T00:00:00+05:30");
+    const keyed = parts.filter(p => p.key && histMap(p.key).length);
+    const constant = parts.filter(p => !(p.key && histMap(p.key).length)).reduce((a, p) => a + (p.constant || 0), 0);
+    let dates = new Set();
+    keyed.forEach(p => histMap(p.key).forEach(x => dates.add(x[0])));
+    dates = Array.from(dates).sort((x, y) => x - y);
+    if (!dates.length) return [];
+    let start = win >= 99999 ? dates[0] : today - win * DAY;
+    if (S.win === "1D") { const prior = dates.filter(t => t < today); start = prior.length ? prior[prior.length - 1] : dates[0]; }
+    let pts = dates.filter(t => t >= start);
+    const before = dates.filter(t => t < start); if (before.length && (!pts.length || pts[0] > start)) pts.unshift(before[before.length - 1]);
+    if (S.gran === "monthly" && pts.length > 2) {
+      const byM = new Map(); pts.forEach(t => byM.set(new Date(t).toISOString().slice(0, 7), t));
+      const m = Array.from(byM.values()); if (m[0] !== pts[0]) m.unshift(pts[0]); pts = m;
+    }
+    return pts.map(t => [t, keyed.reduce((a, p) => a + p.units * priceAt(histMap(p.key), t), 0) + constant]);
+  }
+  function partsOf(lines, bucket) {
+    return lines.map(h => { const w = bucket ? (h.buckets[bucket] || 0) : 1; return { key: h.key, units: h.units * w, constant: (h.value || 0) * w }; });
+  }
+  function areaChart(ser, opts) {
+    const W = opts.w || 720, H = opts.h || 200, pl = 8, pr = 8, pt = 18, pb = 22;
+    const wrap = el("div", { class: "area-wrap" });
+    if (ser.length < 2) { wrap.append(el("p", { class: "meta", text: "Not enough price history for this window yet." })); return wrap; }
+    const vs = ser.map(x => x[1]), lo = Math.min.apply(null, vs), hi = Math.max.apply(null, vs), pad = (hi - lo) * 0.12 || hi * 0.01 || 1;
+    const y0 = lo - pad, y1 = hi + pad, t0 = ser[0][0], t1 = ser[ser.length - 1][0];
+    const x = t => pl + (W - pl - pr) * ((t - t0) / ((t1 - t0) || 1)), y = v => pt + (H - pt - pb) * (1 - (v - y0) / (y1 - y0));
+    const up = vs[vs.length - 1] >= vs[0], col = up ? "var(--pos)" : "var(--neg)";
+    const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, class: "chart area", role: "img", "aria-label": opts.label + ": " + short(vs[0]) + " to " + short(vs[vs.length - 1]) });
+    const line = ser.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(p[1]).toFixed(1)).join(" ");
+    const fill = sv("path", { d: line + " L" + x(t1).toFixed(1) + " " + (H - pb) + " L" + x(t0).toFixed(1) + " " + (H - pb) + " Z", fill: col, opacity: 0.12 });
+    svg.append(sv("line", { x1: pl, x2: W - pr, y1: y(vs[0]), y2: y(vs[0]), stroke: "var(--ink-3)", "stroke-dasharray": "3 4" }), fill,
+      sv("path", { d: line, fill: "none", stroke: col, "stroke-width": 2, class: "area-line" }),
+      sv("circle", { cx: x(t1), cy: y(vs[vs.length - 1]), r: 3.5, fill: col }));
+    const lab = t => { const d = new Date(t + 5.5 * 3600000); return d.getUTCDate() + " " + MON[d.getUTCMonth()] + (t1 - t0 > 300 * DAY ? " '" + String(d.getUTCFullYear()).slice(2) : ""); };
+    svg.append(sv("text", { x: pl, y: H - 6 }, lab(t0)), sv("text", { x: W - pr, y: H - 6, "text-anchor": "end" }, lab(t1)),
+      sv("text", { x: W - pr, y: 12, "text-anchor": "end" }, "High " + short(hi) + " · Low " + short(lo)));
+    // hover / touch readout
+    const cur = sv("line", { x1: 0, x2: 0, y1: pt, y2: H - pb, stroke: "var(--ink-3)", opacity: 0 }), dot = sv("circle", { r: 4, fill: col, opacity: 0 });
+    svg.append(cur, dot);
+    const tip = el("div", { class: "tip", hidden: true });
+    const move = ev => {
+      const r = svg.getBoundingClientRect(), px = ((ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left) / r.width * W;
+      let best = 0; ser.forEach((p, i) => { if (Math.abs(x(p[0]) - px) < Math.abs(x(ser[best][0]) - px)) best = i; });
+      const p = ser[best]; cur.setAttribute("x1", x(p[0])); cur.setAttribute("x2", x(p[0])); cur.setAttribute("opacity", 1);
+      dot.setAttribute("cx", x(p[0])); dot.setAttribute("cy", y(p[1])); dot.setAttribute("opacity", 1);
+      tip.hidden = false; tip.textContent = lab(p[0]) + " · " + inr(p[1]) + " · " + delta(p[1] - vs[0], vs[0]);
+      tip.style.setProperty("left", Math.min(78, Math.max(0, x(p[0]) / W * 100 - 10)) + "%");
+    };
+    svg.addEventListener("pointermove", move); svg.addEventListener("touchmove", move, { passive: true });
+    svg.addEventListener("pointerleave", () => { cur.setAttribute("opacity", 0); dot.setAttribute("opacity", 0); tip.hidden = true; });
+    wrap.append(tip, svg);
+    return wrap;
+  }
+  function windowControls() {
+    return el("div", { class: "winbar" },
+      el("div", { class: "chips", role: "group", "aria-label": "Window" }, WINDOWS.map(w => el("button", { type: "button", class: "chip", "aria-pressed": S.win === w[0] ? "true" : "false", onclick: () => { S.win = w[0]; render(); }, text: w[0] }))),
+      el("div", { class: "seg small-seg", role: "group", "aria-label": "Granularity" },
+        ["daily", "monthly"].map(g => el("button", { type: "button", "aria-pressed": S.gran === g ? "true" : "false", onclick: () => { S.gran = g; render(); }, text: g === "daily" ? "Daily" : "Monthly" }))));
+  }
+  function changeLine(ser) {
+    if (ser.length < 2) return null;
+    const a = ser[0][1], b = ser[ser.length - 1][1], d = b - a;
+    return el("div", { class: "chg " + (d >= 0 ? "upc" : "dn") }, el("span", { class: "num big2", text: (d >= 0 ? "▲ " : "▼ ") + inr(Math.abs(d)) }),
+      el("span", { class: "num", text: " " + pct(a ? d / a : 0) }), el("span", { class: "meta", text: " " + (S.win === "All" ? "since " : "over ") + (S.win === "All" ? new Date(ser[0][0]).toISOString().slice(0, 10) : S.win) }));
+  }
   function viewHoldings(rows, bt) {
+    S.win = S.win || "1M"; S.gran = S.gran || "daily"; S.openG = S.openG || {};
     const defs = S.book.bucket_defs;
     const chips = el("div", { class: "chips" },
       el("button", { type: "button", class: "chip", "aria-pressed": S.bucket ? "false" : "true", onclick: () => { S.bucket = null; render(); }, text: "All buckets" }),
       defs.filter(d => bt[d.key]).map(d => el("button", { type: "button", class: "chip", "aria-pressed": S.bucket === d.key ? "true" : "false", onclick: () => { S.bucket = d.key; render(); }, text: d.label })));
+    const scope = S.bucket ? rows.filter(h => h.buckets[S.bucket]) : rows;
+    const ser = seriesFor(partsOf(scope, S.bucket));
     const tb = el("tbody");
     const order = S.bucket ? [S.bucket] : defs.map(d => d.key);
     let grand = 0;
@@ -713,30 +806,59 @@
       const inB = rows.filter(h => h.buckets[bk]);
       if (!inB.length) return;
       const lab = (defs.find(d => d.key === bk) || {}).label || bk;
-      let sv_ = 0, sc = 0;
-      const head = el("tr", { class: "sub" }, el("td", { text: lab }), el("td"), el("td"), el("td", { class: "n" }), el("td", { class: "n" }), el("td", { class: "n" }));
-      tb.append(head);
-      inB.sort((a, b) => (b.value || 0) * b.buckets[bk] - (a.value || 0) * a.buckets[bk]).forEach(h => {
-        const w = h.buckets[bk], v = (h.value || 0) * w, c = h.cost * w; sv_ += v; sc += c;
-        const split = Object.keys(h.buckets).length > 1 ? " (" + Math.round(w * 100) + "% of the line)" : "";
-        const isAmt = h.kind === "liquid" || h.kind === "cash" || h.nav_static === 1;
-        tb.append(el("tr", null,
-          el("td", null, el("div", { text: h.name + split }), el("div", { class: "meta" }, h.app + (h.pending ? " · " : ""), h.pending ? pill("waiting", "· allotment") : null)),
-          el("td", { class: "n", text: isAmt ? "₹ amount" : (h.units * w).toLocaleString("en-IN", { maximumFractionDigits: 3 }) }),
-          el("td", { class: "n" }, el("div", { text: h.price === null ? "—" : (isAmt ? "—" : h.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })) }), el("div", { class: "meta", text: isAmt ? "" : h.priceAt })),
-          el("td", { class: "n" + (S.flash && h.key && S.flash[h.key] ? " flash-" + S.flash[h.key] : ""), text: inr(v) }),
-          el("td", { class: "n", text: inr(c) }),
-          el("td", { class: "n", text: inr(v - c, { sign: true }) + (c ? " " + pct((v - c) / c) : "") })));
-      });
-      head.children[3].textContent = inr(sv_); head.children[4].textContent = inr(sc); head.children[5].textContent = inr(sv_ - sc, { sign: true });
+      const groups = new Map();
+      inB.forEach(h => { const g = groups.get(h.group) || { key: h.group, name: h.display, apps: new Set(), lots: [] }; g.apps.add(h.app); g.lots.push(h); groups.set(h.group, g); });
+      const G = Array.from(groups.values()).map(g => {
+        const w = h => h.buckets[bk];
+        g.value = g.lots.reduce((a, h) => a + (h.value || 0) * w(h), 0);
+        g.cost = g.lots.reduce((a, h) => a + h.cost * w(h), 0);
+        g.isAmt = g.lots.every(h => h.kind === "liquid" || h.kind === "cash" || h.nav_static === 1);
+        g.units = g.lots.reduce((a, h) => a + h.units * w(h), 0);
+        g.price = g.lots[0].price; g.priceAt = g.lots[0].priceAt; g.pkey = g.lots[0].key;
+        g.pending = g.lots.some(h => h.pending);
+        g.ser = seriesFor(partsOf(g.lots, bk));
+        g.wchg = g.ser.length > 1 ? g.ser[g.ser.length - 1][1] - g.ser[0][1] : null;
+        return g;
+      }).sort((a, b) => b.value - a.value);
+      const sv_ = G.reduce((a, g) => a + g.value, 0), sc = G.reduce((a, g) => a + g.cost, 0), sw = G.reduce((a, g) => a + (g.wchg || 0), 0);
+      tb.append(el("tr", { class: "sub" }, el("td", { text: lab }), el("td"), el("td"), el("td", { class: "n", text: inr(sv_) }), el("td", { class: "n", text: delta(sv_ - sc, sc) }), el("td", { class: "n", text: delta(sw) })));
       grand += sv_;
+      G.forEach(g => {
+        const id = bk + "|" + g.key, open = !!S.openG[id], multi = g.lots.length > 1;
+        const toggle = () => { S.openG[id] = !open; render(); };
+        tb.append(el("tr", { class: "grow" + (open ? " open" : ""), role: "button", tabindex: "0", "aria-expanded": open ? "true" : "false", onclick: toggle, onkeydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } } },
+          el("td", null, el("div", { class: "rowtitle" }, el("span", { class: "chev", "aria-hidden": "true", text: "›" }), " " + g.name),
+            el("div", { class: "meta" }, Array.from(g.apps).join(", ") + " · " + g.lots.length + (g.lots.length > 1 ? " purchases" : " purchase"), g.pending ? " · " : "", g.pending ? pill("waiting", "· allotment") : null)),
+          el("td", { class: "n num", text: g.isAmt ? "—" : g.units.toLocaleString("en-IN", { maximumFractionDigits: 3 }) }),
+          el("td", { class: "n" }, el("div", { class: "num", text: g.isAmt || g.price === null ? "—" : g.price.toLocaleString("en-IN", { maximumFractionDigits: 2 }) }), el("div", { class: "meta", text: g.isAmt ? "" : g.priceAt })),
+          el("td", { class: "n num" + (S.flash && g.pkey && S.flash[g.pkey] ? " flash-" + S.flash[g.pkey] : ""), text: inr(g.value) }),
+          el("td", { class: "n num " + (g.value - g.cost >= 0 ? "upc" : "dn"), text: delta(g.value - g.cost, g.cost) }),
+          el("td", { class: "n num " + ((g.wchg || 0) >= 0 ? "upc" : "dn"), text: g.wchg === null ? "—" : delta(g.wchg) })));
+        if (open) {
+          const lotsT = el("table", { class: "lots" }, el("thead", null, el("tr", null, ["Bought", "Units", "Buy price", "Cost", "Value", "Gain"].map((h, i) => el("th", { class: i ? "n" : "", text: h })))),
+            el("tbody", null, g.lots.slice().sort((a, b) => (a.lot_date || "") < (b.lot_date || "") ? -1 : 1).map(h => {
+              const w = h.buckets[bk], v = (h.value || 0) * w, c = h.cost * w, amt = h.kind === "liquid" || h.kind === "cash" || h.nav_static === 1;
+              return el("tr", null,
+                el("td", null, el("div", { class: "num", text: h.lot_date ? niceDate(h.lot_date) : "Before Oct 2026" }), el("div", { class: "meta", text: h.app + (w < 1 ? " · " + Math.round(w * 100) + "% in this bucket" : "") + (h.pending ? " · awaiting allotment" : "") })),
+                el("td", { class: "n num", text: amt ? "—" : (h.units * w).toLocaleString("en-IN", { maximumFractionDigits: 3 }) }),
+                el("td", { class: "n num", text: amt || !h.units ? "—" : (h.cost / h.units).toLocaleString("en-IN", { maximumFractionDigits: h.cost / h.units < 100 ? 4 : 2 }) }),
+                el("td", { class: "n num", text: inr(c) }),
+                el("td", { class: "n num", text: inr(v) }),
+                el("td", { class: "n num " + (v - c >= 0 ? "upc" : "dn"), text: delta(v - c, c) }));
+            })));
+          tb.append(el("tr", { class: "lot-panel" }, el("td", { colspan: 6 },
+            el("div", { class: "lot-wrap" }, el("div", null, changeLine(g.ser), areaChart(g.ser, { w: 420, h: 170, label: g.name + " value" })), el("div", { class: "tw" }, lotsT)))));
+        }
+      });
     });
     if (!S.bucket) tb.append(el("tr", { class: "total" }, el("td", { text: "Whole book" }), el("td"), el("td"), el("td", { class: "n", text: inr(grand) }), el("td"), el("td")));
     return el("section", { class: "view", id: "holdings" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Holdings" }), el("h2", { text: holdingsInsight(rows) })),
-        el("span", { class: "q", text: "Units as of " + S.book.units_as_of + " · values = units × latest price" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Holdings" }), el("h2", { text: holdingsInsight(rows) }),
+        el("div", { class: "meta", text: "Units as of " + niceDate(S.book.units_as_of) + " · the chart values today's holdings at each day's price (buys and sells ignored), so changes are market moves only" }))),
+      windowControls(),
+      el("div", { class: "hold-chart" }, changeLine(ser), areaChart(ser, { label: (S.bucket ? (defs.find(d => d.key === S.bucket) || {}).label : "Whole book") + " value" })),
       chips,
-      el("div", { class: "tw" }, el("table", { class: "hold" }, el("thead", null, el("tr", null, el("th", { text: "Holding" }), el("th", { class: "n", text: "Units" }), el("th", { class: "n", text: "Price / NAV" }), el("th", { class: "n", text: "Value" }), el("th", { class: "n", text: "Cost" }), el("th", { class: "n", text: "Gain" }))), tb)));
+      el("div", { class: "tw" }, el("table", { class: "hold2" }, el("thead", null, el("tr", null, ["Holding", "Units", "Price / NAV", "Value", "Gain on cost", "Change · " + S.win].map((h, i) => el("th", { class: i ? "n" : "", text: h })))), tb)));
   }
 
   // ---- view 3

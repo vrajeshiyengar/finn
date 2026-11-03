@@ -372,3 +372,46 @@ details.earlier > summary { cursor: pointer; }
 @media (max-width: 640px) { .goal { grid-template-columns: 40px minmax(0, 1fr) auto 14px; } }
 
 .why.info { color: var(--ink-2); }
+
+/* =============================================================== holdings v2: consolidated rows, lots, value over time */
+.winbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.winbar .chips { margin: 0; }
+.small-seg button { padding: 5px 12px; font-size: 12px; }
+.hold-chart { margin-bottom: 14px; }
+.chg { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; margin-bottom: 4px; }
+.chg .big2 { font-size: 20px; font-weight: 700; }
+.area-wrap { position: relative; }
+.chart.area { touch-action: pan-y; cursor: crosshair; }
+.tip { position: absolute; top: -4px; background: var(--ink); color: var(--panel); font-size: 12px; padding: 4px 8px; border-radius: 6px; white-space: nowrap; pointer-events: none; font-variant-numeric: tabular-nums; z-index: 2; }
+#dash.intro .area-line { stroke-dasharray: 2000; animation: drawLong 1.2s ease both .2s; }
+@keyframes drawLong { from { stroke-dashoffset: 2000; } to { stroke-dashoffset: 0; } }
+tr.grow { cursor: pointer; }
+tr.grow:hover td { background: var(--bg); }
+tr.grow .chev { display: inline-block; transition: transform .2s ease; color: var(--ink-3); width: 10px; }
+tr.grow.open .chev { transform: rotate(90deg); color: var(--accent); }
+tr.grow.open td { background: var(--bg); border-bottom-color: transparent; }
+tr.lot-panel > td { background: var(--bg); padding: 4px 10px 14px 24px; }
+.lot-wrap { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 16px; align-items: start; animation: panelIn .25s ease; }
+table.lots th, table.lots td { padding: 5px 6px; font-size: 12.5px; }
+@media (max-width: 900px) { .lot-wrap { grid-template-columns: 1fr; } }
+@media (max-width: 640px) {
+  table.hold2 tr.grow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  table.hold2 tr.grow td:nth-child(1) { grid-column: 1 / 3; grid-row: 1; }
+  table.hold2 tr.grow td:nth-child(4) { grid-column: 3; grid-row: 1; text-align: right !important; font-weight: 700; }
+  table.hold2 tr.grow td:nth-child(4)::before { display: none; }
+  table.hold2 tr.grow td:nth-child(2) { grid-column: 1; grid-row: 2; }
+  table.hold2 tr.grow td:nth-child(5) { grid-column: 2; grid-row: 2; }
+  table.hold2 tr.grow td:nth-child(6) { grid-column: 3; grid-row: 2; text-align: right !important; }
+  table.hold2 tr.grow td:nth-child(3) { display: none; }
+  table.hold2 tr.sub td:nth-child(5), table.hold2 tr.sub td:nth-child(6) { display: none; }
+  table.hold2 tr.lot-panel { display: block; padding: 0; border: 0; }
+  table.hold2 tr.lot-panel > td { display: block; padding: 8px; border-radius: 8px; }
+  table.hold2 tr.lot-panel > td::before { display: none !important; }
+  table.lots tr { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  table.lots td:first-child { grid-column: 1 / -1; }
+}
+@media (max-width: 640px) {
+  table.hold2 tr.grow.open { background: var(--bg); border-radius: 8px 8px 0 0; }
+  table.hold2 tr.grow.open td { background: transparent; }
+  table.lots td:nth-child(1) { grid-column: 1 / -1; }
+}
