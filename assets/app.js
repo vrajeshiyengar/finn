@@ -10,9 +10,9 @@
   }
   const CFG = window.MONEY_CFG || {};
   const AAD = new TextEncoder().encode("money-dash/v1");
-  const IDLE_MS = 15 * 60 * 1000;
+  const SLIDE_MS = 24 * 3600 * 1000, MAX_MS = 7 * 24 * 3600 * 1000;   // stay signed in: 24 h from last visit, 7 days at most
   const S = { token: null, book: null, prices: {}, pricesAt: null, status: null, month: 0, bucket: null };
-  let idleTimer = null, hiddenAt = null;
+
 
   // ---------------------------------------------------------------- tiny DOM helpers (text only)
   function el(tag, attrs) {
@@ -103,40 +103,76 @@
     if (!r.ok) throw new Error(path + " missing (" + r.status + ")");
     return r.json();
   }
+  // ---------------------------------------------------------------- remembered session (this device only)
+  // The AES key is kept as a NON-EXTRACTABLE CryptoKey in IndexedDB: page code can decrypt with it, but the raw
+  // key can't be read back out. 24 h sliding expiry, 7-day cap; Sign out deletes it.
+  function idb() {
+    return new Promise((res, rej) => {
+      const r = indexedDB.open("money-dash", 1);
+      r.onupgradeneeded = () => r.result.createObjectStore("s");
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+  }
+  async function idbDo(mode, fn) {
+    const db = await idb();
+    return new Promise((res, rej) => {
+      const tx = db.transaction("s", mode), st = tx.objectStore("s"), r = fn(st);
+      tx.oncomplete = () => { db.close(); res(r && r.result); }; tx.onerror = () => { db.close(); rej(tx.error); };
+    });
+  }
+  async function saveSession(key, created) {
+    try { await idbDo("readwrite", st => st.put({ key, created: created || Date.now(), seen: Date.now() }, "session")); } catch (e) {}
+  }
+  async function loadSession() {
+    try {
+      const v = await idbDo("readonly", st => st.get("session"));
+      if (!v || !v.key) return null;
+      const now = Date.now();
+      if (now - v.seen > SLIDE_MS || now - v.created > MAX_MS) { await clearSession(); return null; }
+      return v;
+    } catch (e) { return null; }
+  }
+  async function clearSession() { try { await idbDo("readwrite", st => st.delete("session")); } catch (e) {} }
+
+  async function openWith(key) {
+    const [b, p, st] = await Promise.all([fetchEnc("data/book.enc"), fetchEnc("data/prices.enc"), fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null)]);
+    S.book = await decrypt(key, b);
+    const pr = await decrypt(key, p);
+    S.prices = pr.prices || {}; S.pricesAt = pr.at; S.status = st;
+    S.key = key;
+    document.getElementById("lock").hidden = true;
+    document.getElementById("dash").hidden = false;
+    render();
+  }
   async function unlock() {
-    msg("Unlocking…");
+    msg("Signing in…");
     try {
       const key = await loadKey();
-      const [b, p, st] = await Promise.all([fetchEnc("data/book.enc"), fetchEnc("data/prices.enc"), fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null)]);
-      S.book = await decrypt(key, b);
-      const pr = await decrypt(key, p);
-      S.prices = pr.prices || {}; S.pricesAt = pr.at; S.status = st;
-      S.key = key;
-      document.getElementById("lock").hidden = true;
-      document.getElementById("dash").hidden = false;
-      render();
-      armIdle();
+      await openWith(key);
+      await saveSession(key);
     } catch (e) {
-      msg(e.message || "Couldn't unlock.");
+      msg(e.message || "Couldn't sign in.");
       S.token = null;
     }
   }
+  async function resume() {
+    const v = await loadSession();
+    if (!v) return false;
+    msg("Signing in…");
+    try { await openWith(v.key); await saveSession(v.key, v.created); return true; }
+    catch (e) { await clearSession(); msg("Your session expired. Sign in again."); return false; }
+  }
   function msg(t) { document.getElementById("lock-msg").textContent = t; }
-  function lockNow(reason) {
+  async function signOut() {
     if (S.token && window.google && google.accounts && google.accounts.oauth2) { try { google.accounts.oauth2.revoke(S.token, () => {}); } catch (e) {} }
+    await clearSession();
     S.token = null; S.book = null; S.prices = {}; S.key = null;
     const d = document.getElementById("dash"); d.replaceChildren(); d.hidden = true;
     document.getElementById("lock").hidden = false;
-    msg(reason || "Locked.");
+    msg("You're signed out.");
   }
-  function armIdle() {
-    const reset = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => lockNow("Locked after 15 minutes idle."), IDLE_MS); };
-    ["pointerdown", "keydown", "scroll", "touchstart"].forEach(ev => window.addEventListener(ev, reset, { passive: true }));
-    reset();
-  }
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) hiddenAt = Date.now();
-    else if (hiddenAt && Date.now() - hiddenAt > IDLE_MS && S.book) lockNow("Locked while the tab was in the background.");
+  document.addEventListener("visibilitychange", async () => {
+    if (!document.hidden && S.book && !(await loadSession())) signOut();   // expired while away
   });
   function initAuth() {
     const btn = document.getElementById("signin");
@@ -147,7 +183,7 @@
       prompt: "",
       callback: (resp) => {
         if (resp.error || !resp.access_token) { msg("Sign-in didn't complete."); return; }
-        if (!google.accounts.oauth2.hasGrantedAllScopes(resp, "https://www.googleapis.com/auth/drive.appdata")) { msg("Drive app-data access is needed to unlock."); return; }
+        if (!google.accounts.oauth2.hasGrantedAllScopes(resp, "https://www.googleapis.com/auth/drive.appdata")) { msg("Allow access to the app's Drive data to sign in."); return; }
         S.token = resp.access_token; unlock();
       },
       error_callback: () => msg("Sign-in was closed or blocked."),
@@ -155,6 +191,7 @@
     btn.disabled = false;
     btn.addEventListener("click", () => tc.requestAccessToken());
   }
+  resume();
   (function waitGis(n) {
     if (window.google && google.accounts && google.accounts.oauth2) initAuth();
     else if (n < 100) setTimeout(() => waitGis(n + 1), 100);
@@ -235,6 +272,12 @@
     });
   }
 
+  function signOutBtn() {
+    const ic = sv("svg", { viewBox: "0 0 24 24", width: 16, height: 16, "aria-hidden": "true", class: "ic" });
+    ic.append(sv("path", { d: "M10 4H5a1 1 0 0 0-1 1v14a1 1 0 0 0 1 1h5", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round" }),
+              sv("path", { d: "M15 8l4 4-4 4M19 12H9", fill: "none", stroke: "currentColor", "stroke-width": 2, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    return el("button", { type: "button", class: "ghost signout", title: "Sign out", "aria-label": "Sign out", onclick: () => signOut() }, ic, el("span", { text: "Sign out" }));
+  }
   function header(mk) {
     const seg = el("div", { class: "seg", role: "group", "aria-label": "Month" },
       el("button", { type: "button", "aria-pressed": S.month === 0 ? "true" : "false", onclick: () => { S.month = 0; render(); }, text: monthLabel(monthKey(0)).split(" ")[0] + " (now)" }),
@@ -246,7 +289,7 @@
         el("div", { class: "meta" }, "Priced " + (S.pricesAt ? S.pricesAt.replace("T", " ").slice(0, 16) + " IST" : "—") + " · data built " + S.book.built_at.replace("T", " ").slice(0, 16) + " IST ",
           age > 26 ? el("span", { class: "pill warn", text: "prices stale" }) : null)),
       el("div", { class: "top-actions" }, seg,
-        el("button", { type: "button", class: "ghost", onclick: () => lockNow("Locked."), text: "Lock" })),
+        signOutBtn()),
       el("nav", { class: "jump", "aria-label": "Sections" },
         [["goals", "Goals"], ["holdings", "Holdings"], ["checklist", "This month"], ["bank", "Bank"], ["calendar", "Calendar"], ["assetz", "Flat"], ["loan", "Loan"], ["cards", "Card"], ["stocks", "Stocks"], ["health", "Health"]]
           .map(([id, lab]) => el("a", { href: "#" + id, onclick: (e) => { e.preventDefault(); const t = document.getElementById(id); if (t) { if (t.tagName === "DETAILS") t.open = true; t.scrollIntoView({ behavior: "smooth", block: "start" }); } }, text: lab }))));

@@ -238,3 +238,19 @@ svg text.wf-v { fill: var(--ink); font-weight: 650; }
 .num.dn { color: var(--neg); font-weight: 650; }
 .num.upc { color: var(--pos); font-weight: 650; }
 @media (max-width: 900px) { .kpis > .kpi:nth-child(4) { grid-column: 1 / -1; } }
+
+/* ---------------------------------------------------------------- Google sign-in button (Google branding: light / dark) */
+.gsi-btn { display: inline-flex; align-items: center; justify-content: center; gap: 12px; height: 44px; padding: 0 16px; border-radius: 22px;
+  background: #fff; color: #1f1f1f; border: 1px solid #747775; font: 500 15px/1 "Roboto", var(--font); letter-spacing: .25px; cursor: pointer; width: 100%; }
+.gsi-btn:hover { background: #f8faff; box-shadow: 0 1px 2px rgba(60,64,67,.3), 0 1px 3px 1px rgba(60,64,67,.15); }
+.gsi-btn:disabled { opacity: .6; cursor: default; box-shadow: none; }
+.gsi-logo { display: inline-flex; width: 20px; height: 20px; }
+.gsi-logo svg { width: 20px; height: 20px; }
+@media (prefers-color-scheme: dark) {
+  .gsi-btn { background: #131314; color: #e3e3e3; border-color: #8e918f; }
+  .gsi-btn:hover { background: #1f1f20; }
+}
+.lock-note { margin: 0; font-size: 12px; color: var(--ink-3); }
+.ghost.signout { display: inline-flex; align-items: center; gap: 6px; }
+.ghost.signout .ic { display: block; }
+@media (max-width: 640px) { .ghost.signout span { display: none; } .ghost.signout { padding: 0 12px; } }
