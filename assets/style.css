@@ -370,3 +370,5 @@ details.earlier > summary { cursor: pointer; }
 .goal { grid-template-columns: 48px minmax(0, 1.3fr) minmax(0, 1.6fr) 104px 16px; }
 .goal > .pill { justify-self: start; }
 @media (max-width: 640px) { .goal { grid-template-columns: 40px minmax(0, 1fr) auto 14px; } }
+
+.why.info { color: var(--ink-2); }

@@ -50,9 +50,10 @@
     return n;
   }
   // ---------------------------------------------------------------- status vocabulary (two fixed sets)
-  // Goals: On track · Watch · Act.   Tasks: Done · Due · Upcoming · Waiting.
+  // Goals: On track · Provisioned · Watch · Act.   Tasks: Done · Due · Upcoming · Waiting.
+  // Provisioned = money deliberately set aside for a known upcoming payment that hasn't been asked for yet.
   const STATUS = {
-    ontrack: ["ok", "✓", "On track"], watch: ["warn", "!", "Watch"], act: ["bad", "✕", "Act"],
+    ontrack: ["ok", "✓", "On track"], provisioned: ["info", "◷", "Provisioned"], watch: ["warn", "!", "Watch"], act: ["bad", "✕", "Act"],
     done: ["ok", "✓", "Done"], due: ["warn", "!", "Due"], overdue: ["bad", "!", "Due"], upcoming: ["info", "○", "Upcoming"], waiting: ["info", "…", "Waiting"],
   };
   function pill(kind, extra) {
@@ -476,6 +477,9 @@
         else if (below && d < 0.03) items.push({ sev: 1, what: st.sym + " is " + pct(d) + " above its exit line " + lvl, act: "If it closes below: " + w.action, jump: "stocks" });
       });
     });
+    // TDS that Assetz has asked for
+    (((S.book.ledgers || {}).home_tds || {}).requested || []).forEach(r =>
+      items.push({ sev: 2, what: "Pay TDS " + inr(r.amount) + " for milestone " + r.milestone + " (2 × " + inr(r.amount / 2) + ")", act: "File Form 26QB for both of you; then tell Finn", jump: "goals" }));
     // salary money not yet invested
     const lp = leftParts(monthData(mkNow));
     if (lp.salary > 0) items.push({ sev: 2, what: inr(lp.salary) + " of " + monthLabel(mkNow) + " salary money is not invested yet", act: "See the month checklist", jump: "checklist" });
@@ -571,7 +575,7 @@
     const net = L.act_in - L.act_out, growth = value - net;
     const sumLine = "In " + short(L.act_in) + " of " + short(L.plan_in) + " planned · Out " + short(L.act_out) + " of " + short(L.plan_out) + " planned · growth " + inr(growth, { sign: true });
     const tb = el("tbody");
-    const rows = L.planned.map(p => ({ d: p.date, label: p.label, dir: p.dir, plan: p.amount, act: p.matched ? p.amount : null, flag: p.matched ? "ok" : (p.date > ymd(istNow()) ? "up" : "miss") }));
+    const rows = L.planned.map(p => ({ d: p.date, label: p.label, dir: p.dir, plan: p.amount, act: p.matched ? p.amount : null, flag: p.matched ? "ok" : p.requested ? "due" : p.provisioned ? "prov" : (p.date > ymd(istNow()) ? "up" : "miss") }));
     const matchedActs = new Set();
     L.actual.forEach(a => {
       const hit = rows.find(r => r.dir === a.dir && r.act !== null && Math.abs(r.plan - a.amount) <= 1000 && !matchedActs.has(r));
@@ -580,7 +584,7 @@
     });
     rows.sort((a, b) => (a.ad || a.d) < (b.ad || b.d) ? -1 : 1).forEach(r => {
       const sign = r.dir === "out" ? -1 : 1;
-      const st = r.flag === "ok" || r.flag === "extra" ? "done" : r.flag === "up" ? "upcoming" : "waiting";
+      const st = r.flag === "ok" || r.flag === "extra" ? "done" : r.flag === "up" ? "upcoming" : r.flag === "prov" ? "provisioned" : r.flag === "due" ? "due" : "waiting";
       tb.append(el("tr", null,
         el("td", null, el("div", { text: (r.dir === "out" ? "Out · " : "In · ") + r.label }), r.how ? el("div", { class: "meta", text: r.how }) : null),
         el("td", { class: "n", text: niceDate(r.ad || r.d) }),
@@ -590,17 +594,19 @@
     });
     tb.append(el("tr", { class: "total" }, el("td", { text: "Growth / market (value − net money in)" }), el("td"), el("td"), el("td", { class: "n", text: inr(growth, { sign: true }) }), el("td")));
     const why = (L.reasons || []).filter(r => !r.startsWith("Upcoming"));
+    const whyCls = why.length && why[0].startsWith("Provisioned") ? "why info" : "why";
     return el("div", { class: "ledger" },
-      el("p", { class: "meta", text: sumLine }), why.length ? el("p", { class: "why", text: why[0] }) : null,
+      el("p", { class: "meta", text: sumLine }), why.length ? el("p", { class: whyCls, text: why[0] }) : null,
       el("div", { class: "tw" }, el("table", { class: "ledger-t" }, el("thead", null, el("tr", null, ["Flow", "Date", "Planned", "Actual", ""].map((h, i) => el("th", { class: i === 0 || i === 4 ? "" : "n", text: h })))), tb)),
       (L.reasons || []).length ? el("ul", { class: "list small" }, L.reasons.map(r => el("li", { text: r }))) : null);
   }
 
   // ---- view 1: goal rows (icon/ring · name + goal · Now | Plan | Gap · status · chevron), expanding in place
-  function goalStatus(v, t, band) {
+  function goalStatus(v, t, band, L) {
     if (!t) return "ontrack";
     const g = (v - t) / t;
     if (Math.abs(g) <= band) return "ontrack";
+    if (L && L.provisioned && Math.abs((v - t - L.provisioned) / t) <= band) return "provisioned";
     const book = S._book, tgt = S._tgt;
     if (g < 0 && Math.abs((book - tgt) / tgt) > band) return "act";
     return "watch";
@@ -650,7 +656,7 @@
       const gap = v - t;
       const goal = g.target || (b.key === "home_tds" && g.outflows ? g.outflows.reduce((a, o) => a + o[1], 0) : null);
       const goalLine = b.key === "retirement" ? "Goal " + short(goal) + " · plan path " + short(g.projection_dec_2036) + " by Dec 2036"
-        : b.key === "home_tds" ? "Covers the next " + (g.outflows || []).length + " TDS payments (" + short(goal) + ")"
+        : b.key === "home_tds" ? (function () { const Lt = (S.book.ledgers || {}).home_tds || {}; if ((Lt.requested || []).length) return short(Lt.requested.reduce((a, r) => a + r.amount, 0)) + " TDS asked for by Assetz, due soon · "; return Lt.provisioned ? short(Lt.provisioned) + " provisioned for a TDS ask not received yet · " : ""; })() + "covers the next " + (g.outflows || []).length + " TDS payments"
         : goal ? "Goal " + short(goal) + (g.date ? " by " + niceDate(g.date) : "") : b.note;
       const open = !!S.openB[b.key];
       const toggle = () => { S.openB[b.key] = !open; render(); };
@@ -662,7 +668,7 @@
           el("div", null, el("div", { class: "lab", text: "Now" }), el("div", { class: "num", "data-count": Math.round(v), text: short(v) })),
           el("div", null, el("div", { class: "lab", text: "Plan" }), el("div", { class: "num", text: short(t) })),
           el("div", null, el("div", { class: "lab", text: "Gap" }), el("div", { class: "num " + (gap < 0 ? "dn" : gap > 0 ? "upc" : ""), text: t ? delta(gap) : "—" }))),
-        pill(goalStatus(v, t, band)),
+        pill(goalStatus(v, t, band, (S.book.ledgers || {})[b.key])),
         el("span", { class: "chev", "aria-hidden": "true", text: "›" }));
       wrap.append(row);
       if (open) {
