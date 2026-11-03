@@ -194,6 +194,8 @@
   // ---------------------------------------------------------------- render
   function render() {
     const root = document.getElementById("dash");
+    const openIds = Array.from(root.querySelectorAll("details[open]")).map(d => d.id);
+    const y = window.scrollY;
     root.replaceChildren();
     const rows = valued();
     const bt = bucketTotals(rows);
@@ -211,20 +213,41 @@
     root.append(viewBank(mk));
     root.append(viewCalendar(mk));
     root.append(detailsFlat(), detailsLoan(), detailsSalary(), detailsCards(), detailsStocks(rows), detailsHealth());
+    stackTables(root);
+    openIds.forEach(id => { const d = document.getElementById(id); if (d) d.open = true; });
+    window.scrollTo(0, y);
+  }
+
+  // Phone pattern: each table row becomes a card; cells carry their column name for the label.
+  function stackTables(root) {
+    root.querySelectorAll("table").forEach(t => {
+      t.classList.add("stack");
+      const heads = Array.from(t.querySelectorAll("thead th")).map(th => th.textContent.trim());
+      const fallback = t.dataset.labels ? t.dataset.labels.split("|") : [];
+      t.querySelectorAll("tbody tr").forEach(tr => {
+        Array.from(tr.children).forEach((td, i) => {
+          const lab = heads[i] || fallback[i] || "";
+          if (lab && !td.hasAttribute("data-label")) td.setAttribute("data-label", lab);
+        });
+      });
+    });
   }
 
   function header(mk) {
     const seg = el("div", { class: "seg", role: "group", "aria-label": "Month" },
-      el("button", { type: "button", "aria-pressed": S.month === 0 ? "true" : "false", onclick: () => { S.month = 0; render(); }, text: "This month · " + monthLabel(monthKey(0)) }),
-      el("button", { type: "button", "aria-pressed": S.month === 1 ? "true" : "false", onclick: () => { S.month = 1; render(); }, text: "Next · " + monthLabel(monthKey(1)) }));
+      el("button", { type: "button", "aria-pressed": S.month === 0 ? "true" : "false", onclick: () => { S.month = 0; render(); }, text: monthLabel(monthKey(0)).split(" ")[0] + " (now)" }),
+      el("button", { type: "button", "aria-pressed": S.month === 1 ? "true" : "false", onclick: () => { S.month = 1; render(); }, text: monthLabel(monthKey(1)).split(" ")[0] + " (next)" }));
     const when = S.pricesAt ? new Date(S.pricesAt) : null;
     const age = when ? (Date.now() - when.getTime()) / 3600000 : 99;
     return el("div", { class: "top" },
       el("div", null, el("h1", { text: "Money" }),
         el("div", { class: "meta" }, "Priced " + (S.pricesAt ? S.pricesAt.replace("T", " ").slice(0, 16) + " IST" : "—") + " · data built " + S.book.built_at.replace("T", " ").slice(0, 16) + " IST ",
           age > 26 ? el("span", { class: "pill warn", text: "prices stale" }) : null)),
-      el("div", { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center" }, seg,
-        el("button", { type: "button", class: "ghost", onclick: () => lockNow("Locked."), text: "Lock" })));
+      el("div", { class: "top-actions" }, seg,
+        el("button", { type: "button", class: "ghost", onclick: () => lockNow("Locked."), text: "Lock" })),
+      el("nav", { class: "jump", "aria-label": "Sections" },
+        [["goals", "Goals"], ["holdings", "Holdings"], ["checklist", "This month"], ["bank", "Bank"], ["calendar", "Calendar"], ["assetz", "Flat"], ["loan", "Loan"], ["cards", "Card"], ["stocks", "Stocks"], ["health", "Health"]]
+          .map(([id, lab]) => el("a", { href: "#" + id, onclick: (e) => { e.preventDefault(); const t = document.getElementById(id); if (t) { if (t.tagName === "DETAILS") t.open = true; t.scrollIntoView({ behavior: "smooth", block: "start" }); } }, text: lab }))));
   }
 
   function strip(book, cost, tgtTotal, mkNow) {
@@ -278,7 +301,7 @@
         pill);
       wrap.append(row);
     });
-    const adj = S.book.plan.active_adjustments || [];
+    const adj = Array.from(new Set((S.book.plan.active_adjustments || []).map(a => a.replace(/ \(money still sits[^)]*\)/, ""))));
     return el("section", { class: "view", id: "goals" },
       el("header", null, el("div", null, el("div", { class: "eyebrow", text: "1 · Goals" }), el("h2", { text: "Am I on track, bucket by bucket?" })),
         el("span", { class: "q", text: "Plan = 5-5-15 sim for " + S.book.plan.target_month + " · On track within ±" + Math.round(S.book.plan.band * 100) + "% · tap a bucket to see what's in it" })),
@@ -322,7 +345,7 @@
       el("header", null, el("div", null, el("div", { class: "eyebrow", text: "2 · Holdings" }), el("h2", { text: "What I hold, and which bucket it belongs to" })),
         el("span", { class: "q", text: "Units as of " + S.book.units_as_of + " · values = units × latest price" })),
       chips,
-      el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, el("th", { text: "Holding" }), el("th", { class: "n", text: "Units" }), el("th", { class: "n", text: "Price / NAV" }), el("th", { class: "n", text: "Value" }), el("th", { class: "n", text: "Cost" }), el("th", { class: "n", text: "Gain" }))), tb)));
+      el("div", { class: "tw" }, el("table", { class: "hold" }, el("thead", null, el("tr", null, el("th", { text: "Holding" }), el("th", { class: "n", text: "Units" }), el("th", { class: "n", text: "Price / NAV" }), el("th", { class: "n", text: "Value" }), el("th", { class: "n", text: "Cost" }), el("th", { class: "n", text: "Gain" }))), tb)));
   }
 
   // ---- view 3
@@ -412,19 +435,20 @@
   // ---- view 5
   function viewCalendar(mk) {
     const today = ymd(istNow());
-    const items = (S.book.calendar || []).filter(e => e.date.slice(0, 7) === mk || (S.month === 0 && !e.done && e.date < today));
+    const items = (S.book.calendar || []).filter(e => e.date.slice(0, 7) === mk);
     const tb = el("tbody");
     items.forEach(e => {
-      const st = e.done ? ["ok", "Done"] : e.date < today ? ["bad", "Overdue"] : e.date === today ? ["warn", "Today"] : ["info", "Upcoming"];
-      tb.append(el("tr", null,
+      const st = e.done ? ["ok", "Done"] : e.date < today ? ["info", "Past"] : e.date === today ? ["warn", "Today"] : ["ok", "Upcoming"];
+      if (st[1] === "Upcoming") st[0] = "info";
+      tb.append(el("tr", { class: st[1] === "Past" || st[1] === "Done" ? "past" : null },
         el("td", { class: "n" }, el("div", { text: niceDate(e.date) }), el("div", { class: "small muted", text: e.time ? e.time + " IST" : "all day" })),
         el("td", null, el("div", { text: e.title }), e.desc ? el("div", { class: "small muted", text: e.desc.slice(0, 220) + (e.desc.length > 220 ? "…" : "") }) : null),
         el("td", null, el("span", { class: "pill " + st[0], text: st[1] }), e.recurring ? el("div", { class: "small muted", text: "repeats" }) : null)));
     });
     return el("section", { class: "view", id: "calendar" },
       el("header", null, el("div", null, el("div", { class: "eyebrow", text: "5 · Calendar" }), el("h2", { text: "Action items in " + monthLabel(mk) })),
-        el("span", { class: "q", text: "Money events from your Google Calendar" + (S.month === 0 ? ", plus anything overdue" : "") })),
-      items.length ? el("div", { class: "tw" }, el("table", null, tb)) : el("p", { class: "muted", text: "Nothing on the calendar for " + monthLabel(mk) + " yet." }));
+        el("span", { class: "q", text: "Money events from your Google Calendar" })),
+      items.length ? el("div", { class: "tw" }, el("table", { "data-labels": "When|What|Status", class: "cal" }, tb)) : el("p", { class: "muted", text: "Nothing on the calendar for " + monthLabel(mk) + " yet." }));
   }
 
   // ---- supporting detail
@@ -437,11 +461,12 @@
     const paid = ms.filter(m => m.paid), tot = ms.reduce((a, m) => a + (m.total || 0), 0), pt = paid.reduce((a, m) => a + (m.total || 0), 0);
     const next = ms.filter(m => !m.paid).slice(0, 4);
     const tb = el("tbody");
+    const showPaid = !!S.showPaid;
     ms.forEach(m => {
+      if (m.paid && !showPaid) return;
       const slip = m.actual && m.planned ? Math.round((new Date(m.actual) - new Date(m.planned)) / 86400000) : null;
       tb.append(el("tr", null,
-        el("td", { class: "n", text: m.n }),
-        el("td", null, el("div", { text: m.name }), el("div", { class: "small muted", text: (m.pct || "") + "" })),
+        el("td", null, el("div", { text: m.n + " · " + m.name }), el("div", { class: "small muted", text: (m.pct || "") + "" })),
         el("td", { class: "n", text: niceDate(m.planned) }),
         el("td", { class: "n" }, m.actual ? niceDate(m.actual) : "—", slip !== null ? el("div", { class: "small " + (slip > 0 ? "" : "muted"), text: slip === 0 ? "on time" : (slip > 0 ? slip + " d late" : -slip + " d early") }) : null),
         el("td", { class: "n", text: inr(m.total) }),
@@ -467,8 +492,9 @@
           tile("Paid so far", short(pt), [Math.round(pt / tot * 100) + "% of the price"]),
           tile("Still to come", short(tot - pt), [next.length + " near-term milestones"]),
           tile("Next TDS", next[0] ? inr(next[0].tds) : "—", [next[0] ? "2 × " + inr(next[0].tds / 2) + " · " + niceDate(next[0].planned) : ""])),
-        el("h3", { class: "small muted", text: "PAYMENT PLAN" }),
-        el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["#", "Milestone", "Planned", "Actual", "Total", "TDS 1%", "Net to builder", ""].map((h, i) => el("th", { class: i === 1 || i === 7 ? "" : "n", text: h })))), tb)),
+        el("div", { class: "row-between" }, el("h3", { class: "small muted", text: "PAYMENT PLAN" }),
+          el("button", { type: "button", class: "chip", "aria-pressed": showPaid ? "true" : "false", onclick: () => { S.showPaid = !showPaid; render(); }, text: showPaid ? "Hide paid (" + paid.length + ")" : "Show paid (" + paid.length + ")" })),
+        el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["Milestone", "Planned", "Actual", "Total", "TDS 1%", "Net to builder", ""].map((h, i) => el("th", { class: i === 0 || i === 6 ? "" : "n", text: h })))), tb)),
         el("p", { class: "small" }, "On top of the price: "), el("ul", { class: "list small" }, extras),
         el("h3", { class: "small muted", text: "PAYMENTS AND PROOFS" }),
         el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["Date", "What", "Amount", "Proof"].map((h, i) => el("th", { class: i === 2 || i === 0 ? "n" : "", text: h })))), pays))));
