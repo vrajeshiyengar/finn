@@ -1,0 +1,12 @@
+name: probe-main-push
+on: { workflow_dispatch: {} }
+permissions: { contents: write }
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: |
+          git config user.name probe; git config user.email probe@users.noreply.github.com
+          git commit -q --allow-empty -m "probe"
+          if git push origin HEAD:main 2>&1; then echo "PUSH_TO_MAIN=ALLOWED"; exit 1; else echo "PUSH_TO_MAIN=BLOCKED"; fi
