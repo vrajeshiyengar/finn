@@ -469,6 +469,36 @@
       el("figcaption", { class: "small muted", text: "How the book gets from the plan to today's value: ▼ orange is below plan, ▲ blue is above. Dashed line = plan." }));
   }
 
+  // Cash-flow bucket ledger: planned vs actual money in and out to date, the growth that's left over, and why it differs.
+  function ledgerBlock(L, value) {
+    const net = L.act_in - L.act_out, growth = value - net;
+    const sumLine = "In " + short(L.act_in) + " of " + short(L.plan_in) + " planned · Out " + short(L.act_out) + " of " + short(L.plan_out) + " planned · growth " + inr(growth, { sign: true });
+    const tb = el("tbody");
+    const rows = L.planned.map(p => ({ d: p.date, label: p.label, dir: p.dir, plan: p.amount, act: p.matched ? p.amount : null, flag: p.matched ? "ok" : (p.date > ymd(istNow()) ? "up" : "miss") }));
+    const matchedActs = new Set();
+    L.actual.forEach(a => {
+      const hit = rows.find(r => r.dir === a.dir && r.act !== null && Math.abs(r.plan - a.amount) <= 1000 && !matchedActs.has(r));
+      if (hit) { matchedActs.add(hit); hit.act = a.amount; hit.how = a.how; hit.ad = a.date; }
+      else rows.push({ d: a.date, label: a.label, dir: a.dir, plan: null, act: a.amount, flag: "extra", how: a.how });
+    });
+    rows.sort((a, b) => (a.ad || a.d) < (b.ad || b.d) ? -1 : 1).forEach(r => {
+      const sign = r.dir === "out" ? -1 : 1;
+      const st = r.flag === "ok" ? ["ok", "✓ done"] : r.flag === "up" ? ["info", "upcoming"] : r.flag === "extra" ? ["info", "not in plan"] : ["warn", "! not yet"];
+      tb.append(el("tr", null,
+        el("td", null, el("div", { text: (r.dir === "out" ? "Out · " : "In · ") + r.label }), r.how ? el("div", { class: "small muted", text: r.how }) : null),
+        el("td", { class: "n", text: niceDate(r.ad || r.d) }),
+        el("td", { class: "n", text: r.plan === null ? "—" : inr(sign * r.plan, { sign: true }) }),
+        el("td", { class: "n", text: r.act === null ? "—" : inr(sign * r.act, { sign: true }) }),
+        el("td", null, el("span", { class: "pill " + st[0], text: st[1] }))));
+    });
+    tb.append(el("tr", { class: "total" }, el("td", { text: "Growth / market (value − net money in)" }), el("td"), el("td"), el("td", { class: "n", text: inr(growth, { sign: true }) }), el("td")));
+    const why = (L.reasons || []).filter(r => !r.startsWith("Upcoming"));
+    return el("details", { class: "ledger" },
+      el("summary", null, el("span", { class: "small", text: "Money in and out · " + sumLine }), why.length ? el("div", { class: "small why", text: "Why it differs: " + why[0] }) : null),
+      el("div", { class: "tw" }, el("table", { class: "ledger-t" }, el("thead", null, el("tr", null, ["Flow", "Date", "Planned", "Actual", ""].map((h, i) => el("th", { class: i === 0 || i === 4 ? "" : "n", text: h })))), tb)),
+      (L.reasons || []).length ? el("ul", { class: "list small" }, L.reasons.map(r => el("li", { text: r }))) : null);
+  }
+
   function viewGoals(bt, T, book, tgtTotal) {
     const G = S.book.plan.goals, band = S.book.plan.band;
     const wrap = el("div", { class: "goals" });
@@ -501,6 +531,8 @@
         el("div", { class: "gbar" }, el("div", { class: "meter" }, el("i", { style: "width:" + (fill * 100).toFixed(1) + "%" }), mark ? el("b", { style: "left:" + (mark * 100).toFixed(1) + "%" }) : null), el("div", { class: "gnums" }, nums)),
         pill);
       wrap.append(row);
+      const L = (S.book.ledgers || {})[b.key];
+      if (L) wrap.append(ledgerBlock(L, v));
     });
     const adj = Array.from(new Set((S.book.plan.active_adjustments || []).map(a => a.replace(/ \(money still sits[^)]*\)/, ""))));
     return el("section", { class: "view", id: "goals" },
