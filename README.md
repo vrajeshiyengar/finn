@@ -1,6 +1,6 @@
-# money
+# finn
 
-A private, static dashboard. Every data file in `data/` is AES-256-GCM ciphertext; the page decrypts
+Finn: a private, static money dashboard. Every data file in `data/` is AES-256-GCM ciphertext; the page decrypts
 it in the browser only after the owner signs in with Google and the key is read from that account's
 Drive app-data folder (scope `drive.appdata`). Nothing readable lives in this repository.
 

@@ -1,4 +1,4 @@
-/* Money dashboard. Static page: everything personal arrives encrypted (data/*.enc) and is decrypted
+/* Finn: private money dashboard. Static page: everything personal arrives encrypted (data/*.enc) and is decrypted
    in memory with a key that only the owner's Google account can read (Drive appDataFolder).
    Rendering uses textContent only; no data value is ever parsed as HTML. */
 (function () {
@@ -386,7 +386,7 @@
     const when = S.pricesAt ? new Date(S.pricesAt) : null;
     const age = when ? (Date.now() - when.getTime()) / 3600000 : 99;
     return el("div", { class: "top" },
-      el("div", null, el("h1", { text: "Money" }),
+      el("div", null, el("div", { class: "brand-row" }, el("img", { src: "assets/finn.svg", alt: "", class: "brand-mark sm", width: 28, height: 28 }), el("h1", { text: "Finn" })),
         (function () { const L = liveLabel(); return el("div", { id: "live", class: "live" + (L.live ? " on" : "") + (L.stale ? " stale" : ""), role: "status" }, el("span", { class: "dot", "aria-hidden": "true" }), el("span", { text: L.text })); })()),
       el("div", { class: "top-actions" }, seg,
         signOutBtn()),
