@@ -109,6 +109,24 @@
     const raw = (await (await gapi("https://www.googleapis.com/drive/v3/files/" + encodeURIComponent(list.files[0].id) + "?alt=media")).text()).trim();
     return crypto.subtle.importKey("raw", b64(raw), { name: "AES-GCM" }, false, ["decrypt"]);
   }
+  // Prices come from the 'data' branch (written by the price job, which can't touch site code);
+  // the builder's copy on main is the fallback. Whichever is newer wins.
+  const DATA_BRANCH = "https://raw.githubusercontent.com/vrajeshiyengar/finn/data/data/";
+  async function fetchJSON(url) { const r = await fetch(url + "?t=" + Date.now(), { cache: "no-store" }); if (!r.ok) throw new Error("missing"); return r.json(); }
+  async function latestPrices(key) {
+    const tries = await Promise.allSettled([fetchJSON(DATA_BRANCH + "prices.enc").then(o => decrypt(key, o)), fetchEnc("data/prices.enc").then(o => decrypt(key, o))]);
+    const got = tries.filter(t => t.status === "fulfilled").map(t => t.value);
+    if (!got.length) throw new Error("No prices available");
+    return got.sort((a, b) => (a.at < b.at ? 1 : -1))[0];
+  }
+  async function latestStatus() {
+    const tries = await Promise.allSettled([fetchJSON(DATA_BRANCH + "status.json"), fetchJSON("data/status.json")]);
+    const got = tries.filter(t => t.status === "fulfilled").map(t => t.value);
+    if (!got.length) return null;
+    const m = Object.assign({}, ...got.slice().sort((a, b) => ((a.prices_at || "") < (b.prices_at || "") ? -1 : 1)));
+    m.book_built_at = got.map(g => g.book_built_at).filter(Boolean).sort().pop();
+    return m;
+  }
   async function fetchEnc(path) {
     const r = await fetch(path + "?t=" + Date.now(), { cache: "no-store" });
     if (!r.ok) throw new Error(path + " missing (" + r.status + ")");
@@ -154,10 +172,10 @@
   function unskeleton() { const d = document.getElementById("dash"); d.replaceChildren(); d.hidden = true; document.getElementById("lock").hidden = false; }
   async function openWith(key) {
     skeleton();
-    const [b, p, st] = await Promise.all([fetchEnc("data/book.enc"), fetchEnc("data/prices.enc"), fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null)]);
+    const [b, st] = await Promise.all([fetchEnc("data/book.enc"), latestStatus()]);
     S.book = await decrypt(key, b);
     try { S.hist = await decrypt(key, await fetchEnc("data/history.enc")); } catch (e) { S.hist = {}; }
-    const pr = await decrypt(key, p);
+    const pr = await latestPrices(key);
     S.prices = pr.prices || {}; S.pricesAt = pr.at; S.status = st;
     S.key = key;
     document.getElementById("lock").hidden = true;
@@ -214,11 +232,11 @@
   async function poll() {
     if (!S.key || document.hidden) return;
     try {
-      const st = await fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null);
+      const st = await latestStatus();
       if (!st) return;
       let changed = false;
       if (st.prices_at && st.prices_at !== S.pricesAt) {
-        const pr = await decrypt(S.key, await fetchEnc("data/prices.enc"));
+        const pr = await latestPrices(S.key);
         const flash = {};
         Object.keys(pr.prices || {}).forEach(k => { const o = S.prices[k], n = pr.prices[k]; if (o && n && n.p !== o.p) flash[k] = n.p > o.p ? "up" : "down"; });
         S.prices = pr.prices || {}; S.pricesAt = pr.at; S.flash = flash; changed = true;

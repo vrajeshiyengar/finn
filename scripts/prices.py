@@ -11,6 +11,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 AAD = b"money-dash/v1"
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SYMBOLS = os.environ.get("SYMBOLS_PATH") or os.path.join(ROOT, "data/symbols.enc")   # read from the site checkout (main)
+OUT = os.environ.get("OUT_DIR") or os.path.join(ROOT, "data")                       # written to the 'data' branch checkout
 
 
 def key():
@@ -48,8 +50,9 @@ def fetch(s):
 
 def main():
     k = key()
-    syms = dec(os.path.join(ROOT, "data/symbols.enc"), k)
-    old_path = os.path.join(ROOT, "data/prices.enc")
+    syms = dec(SYMBOLS, k)
+    os.makedirs(OUT, exist_ok=True)
+    old_path = os.path.join(OUT, "prices.enc")
     old = dec(old_path, k)["prices"] if os.path.exists(old_path) else {}
     prices, failed = dict(old), []
     for key_, s in syms.items():
@@ -57,15 +60,15 @@ def main():
             try:
                 p, at, pc = fetch(s); prices[key_] = {"p": p, "at": at, "pc": pc}; break
             except Exception as e:
-                if attempt == 2: failed.append(key_.split(":")[0] + ":" + type(e).__name__)
+                if attempt == 2: failed.append(type(e).__name__)   # no symbols in logs or status
                 time.sleep(2)
     now = dt.datetime.now(IST).isoformat(timespec="seconds")
     json.dump(enc({"at": now, "source": "actions", "prices": prices}, k), open(old_path, "w"))
-    st_path = os.path.join(ROOT, "data/status.json")
+    st_path = os.path.join(OUT, "status.json")
     st = json.load(open(st_path)) if os.path.exists(st_path) else {}
     st.update(prices_at=now, prices_ok=len(syms) - len(failed), prices_failed=len(failed), prices_errors=failed[:10])
     json.dump(st, open(st_path, "w"), indent=1)
-    print("prices: %d ok, %d failed" % (len(syms) - len(failed), len(failed)))
+    print("prices: %d ok, %d failed" % (len(syms) - len(failed), len(failed)))   # counts only
     if len(failed) > len(syms) / 2: sys.exit(1)
 
 
