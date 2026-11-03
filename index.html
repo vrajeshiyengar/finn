@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' https://accounts.google.com/gsi/style; connect-src 'self' https://www.googleapis.com https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'; manifest-src 'self'">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Money</title>
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<div id="frame-guard" hidden>This page can't be shown inside another site.</div>
+<main id="app">
+  <section id="lock" class="lock">
+    <div class="lock-card">
+      <h1 class="brand">Money</h1>
+      <p class="lock-sub">Private. Sign in with the owner's Google account to unlock.</p>
+      <button id="signin" class="btn-primary" type="button" disabled>Sign in with Google</button>
+      <p id="lock-msg" class="lock-msg" role="status"></p>
+    </div>
+  </section>
+  <div id="dash" hidden></div>
+</main>
+<script src="assets/config.js"></script>
+<script src="assets/app.js"></script>
+<script src="https://accounts.google.com/gsi/client" async></script>
+</body>
+</html>
