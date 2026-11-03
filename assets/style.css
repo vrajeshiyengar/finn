@@ -421,3 +421,7 @@ table.lots th, table.lots td { padding: 5px 6px; font-size: 12.5px; }
 .brand-mark { width: 40px; height: 40px; border-radius: 10px; display: block; }
 .brand-mark.sm { width: 28px; height: 28px; border-radius: 8px; }
 .top .brand-row h1 { font-size: 20px; letter-spacing: -0.01em; }
+
+.brand-logo { width: 100%; max-width: 280px; height: auto; margin: -40px auto -50px; display: block; border-radius: 12px; }
+.brand-mark.sm { width: 40px; height: 40px; object-fit: cover; object-position: 12% 50%; border-radius: 8px; background: #fff; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
