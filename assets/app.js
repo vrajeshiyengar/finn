@@ -49,6 +49,16 @@
     if (text !== undefined) n.textContent = String(text);
     return n;
   }
+  // ---------------------------------------------------------------- status vocabulary (two fixed sets)
+  // Goals: On track · Watch · Act.   Tasks: Done · Due · Upcoming · Waiting.
+  const STATUS = {
+    ontrack: ["ok", "✓", "On track"], watch: ["warn", "!", "Watch"], act: ["bad", "✕", "Act"],
+    done: ["ok", "✓", "Done"], due: ["warn", "!", "Due"], overdue: ["bad", "!", "Due"], upcoming: ["info", "○", "Upcoming"], waiting: ["info", "…", "Waiting"],
+  };
+  function pill(kind, extra) {
+    const st = STATUS[kind] || STATUS.waiting;
+    return el("span", { class: "pill " + st[0] }, el("span", { class: "pill-ic", "aria-hidden": "true", text: st[1] }), st[2] + (extra ? " " + extra : ""));
+  }
   function safeUrl(u) {
     try {
       const x = new URL(u);
@@ -134,7 +144,15 @@
   }
   async function clearSession() { try { await idbDo("readwrite", st => st.delete("session")); } catch (e) {} }
 
+  function skeleton() {
+    const d = document.getElementById("dash");
+    d.replaceChildren(el("div", { class: "skel" }, el("div", { class: "sk sk-top" }), el("div", { class: "sk-row" }, [0, 1, 2, 3].map(() => el("div", { class: "sk sk-card" }))),
+      el("div", { class: "sk sk-block" }), el("div", { class: "sk sk-block" })));
+    d.hidden = false; document.getElementById("lock").hidden = true;
+  }
+  function unskeleton() { const d = document.getElementById("dash"); d.replaceChildren(); d.hidden = true; document.getElementById("lock").hidden = false; }
   async function openWith(key) {
+    skeleton();
     const [b, p, st] = await Promise.all([fetchEnc("data/book.enc"), fetchEnc("data/prices.enc"), fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null)]);
     S.book = await decrypt(key, b);
     const pr = await decrypt(key, p);
@@ -142,7 +160,9 @@
     S.key = key;
     document.getElementById("lock").hidden = true;
     document.getElementById("dash").hidden = false;
+    S.intro = true;
     render();
+    startLive();
   }
   async function unlock() {
     msg("Signing in…");
@@ -151,6 +171,7 @@
       await openWith(key);
       await saveSession(key);
     } catch (e) {
+      unskeleton();
       msg(e.message || "Couldn't sign in.");
       S.token = null;
     }
@@ -160,10 +181,75 @@
     if (!v) return false;
     msg("Signing in…");
     try { await openWith(v.key); await saveSession(v.key, v.created); return true; }
-    catch (e) { await clearSession(); msg("Your session expired. Sign in again."); return false; }
+    catch (e) { unskeleton(); await clearSession(); msg("Your session expired. Sign in again."); return false; }
   }
   function msg(t) { document.getElementById("lock-msg").textContent = t; }
+
+  // ---------------------------------------------------------------- live: price refresh, "x min ago", change flashes
+  let liveTimer = null, tickTimer = null;
+  function ago(iso) {
+    if (!iso) return "—";
+    const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+    if (m < 1) return "just now"; if (m < 60) return m + " min ago";
+    const h = Math.round(m / 60); if (h < 36) return h + " h ago";
+    return Math.round(h / 24) + " days ago";
+  }
+  function marketOpen() {
+    const n = istNow(), d = n.getDay(), t = n.getHours() * 60 + n.getMinutes();
+    return d >= 1 && d <= 5 && t >= 555 && t <= 945;
+  }
+  function liveLabel() {
+    const age = S.pricesAt ? (Date.now() - new Date(S.pricesAt).getTime()) / 60000 : 1e9;
+    const live = marketOpen() && age < 45;
+    return { live, stale: age > 26 * 60, text: (live ? "Prices live · " : "Prices · ") + ago(S.pricesAt) + " · updated " + ago(S.book && S.book.built_at) };
+  }
+  function tick() {
+    const n = document.getElementById("live"); if (!n || !S.book) return;
+    const L = liveLabel();
+    n.className = "live" + (L.live ? " on" : "") + (L.stale ? " stale" : "");
+    n.lastChild.textContent = L.text;
+  }
+  async function poll() {
+    if (!S.key || document.hidden) return;
+    try {
+      const st = await fetch("data/status.json?t=" + Date.now(), { cache: "no-store" }).then(r => r.ok ? r.json() : null);
+      if (!st) return;
+      let changed = false;
+      if (st.prices_at && st.prices_at !== S.pricesAt) {
+        const pr = await decrypt(S.key, await fetchEnc("data/prices.enc"));
+        const flash = {};
+        Object.keys(pr.prices || {}).forEach(k => { const o = S.prices[k], n = pr.prices[k]; if (o && n && n.p !== o.p) flash[k] = n.p > o.p ? "up" : "down"; });
+        S.prices = pr.prices || {}; S.pricesAt = pr.at; S.flash = flash; changed = true;
+      }
+      if (st.book_built_at && S.book && st.book_built_at !== S.book.built_at) {
+        S.book = await decrypt(S.key, await fetchEnc("data/book.enc")); changed = true;
+      }
+      S.status = st;
+      if (changed) { render(); setTimeout(() => { S.flash = {}; document.querySelectorAll(".flash-up,.flash-down").forEach(n => n.classList.remove("flash-up", "flash-down")); }, 1800); }
+    } catch (e) { /* keep showing what we have */ }
+  }
+  function startLive() {
+    clearInterval(liveTimer); clearInterval(tickTimer);
+    liveTimer = setInterval(poll, 5 * 60 * 1000);
+    tickTimer = setInterval(tick, 30 * 1000);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && S.key) { poll(); tick(); } });
+
+  // ---------------------------------------------------------------- motion helpers (skipped when reduced motion is on)
+  const REDUCED = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function countUps(root) {
+    if (REDUCED) return;
+    root.querySelectorAll("[data-count]").forEach(n => {
+      const to = parseFloat(n.getAttribute("data-count")), fmt = n.getAttribute("data-fmt") || "short", final = n.textContent;
+      if (!isFinite(to)) return;
+      const t0 = performance.now(), dur = 700;
+      const f = x => fmt === "inr" ? inr(x) : fmt === "pct" ? pct(x) : short(x);
+      const step = now => { const k = Math.min(1, (now - t0) / dur), e = 1 - Math.pow(1 - k, 3); n.textContent = k < 1 ? f(to * e) : final; if (k < 1) requestAnimationFrame(step); };
+      requestAnimationFrame(step);
+    });
+  }
   async function signOut() {
+    clearInterval(liveTimer); clearInterval(tickTimer);
     if (S.token && window.google && google.accounts && google.accounts.oauth2) { try { google.accounts.oauth2.revoke(S.token, () => {}); } catch (e) {} }
     await clearSession();
     S.token = null; S.book = null; S.prices = {}; S.key = null;
@@ -255,6 +341,18 @@
     stackTables(root);
     openIds.forEach(id => { const d = document.getElementById(id); if (d) d.open = true; });
     window.scrollTo(0, y);
+    root.querySelectorAll("h2").forEach(h => {          // a finished state gets an animated check mark
+      if (!h.textContent.startsWith("✓ ")) return;
+      const rest = h.textContent.slice(2);
+      const ck = sv("svg", { viewBox: "0 0 24 24", class: "ck", "aria-hidden": "true" });
+      ck.append(sv("path", { d: "M5 12.5l4.5 4.5L19 7.5", fill: "none", stroke: "var(--ok)", "stroke-width": 2.6, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+      h.replaceChildren(ck, document.createTextNode(rest));
+    });
+    if (S.intro) {
+      root.classList.add("intro"); countUps(root); S.intro = false;
+      setTimeout(() => root.classList.remove("intro"), 2200);
+    }
+    if (S.swap) { root.classList.add("swap"); S.swap = false; setTimeout(() => root.classList.remove("swap"), 500); }
   }
 
   // Phone pattern: each table row becomes a card; cells carry their column name for the label.
@@ -280,14 +378,13 @@
   }
   function header(mk) {
     const seg = el("div", { class: "seg", role: "group", "aria-label": "Month" },
-      el("button", { type: "button", "aria-pressed": S.month === 0 ? "true" : "false", onclick: () => { S.month = 0; render(); }, text: monthLabel(monthKey(0)).split(" ")[0] + " (now)" }),
-      el("button", { type: "button", "aria-pressed": S.month === 1 ? "true" : "false", onclick: () => { S.month = 1; render(); }, text: monthLabel(monthKey(1)).split(" ")[0] + " (next)" }));
+      el("button", { type: "button", "aria-pressed": S.month === 0 ? "true" : "false", onclick: () => { if (S.month !== 0) { S.month = 0; S.swap = true; render(); } }, text: monthLabel(monthKey(0)).split(" ")[0] + " (now)" }),
+      el("button", { type: "button", "aria-pressed": S.month === 1 ? "true" : "false", onclick: () => { if (S.month !== 1) { S.month = 1; S.swap = true; render(); } }, text: monthLabel(monthKey(1)).split(" ")[0] + " (next)" }));
     const when = S.pricesAt ? new Date(S.pricesAt) : null;
     const age = when ? (Date.now() - when.getTime()) / 3600000 : 99;
     return el("div", { class: "top" },
       el("div", null, el("h1", { text: "Money" }),
-        el("div", { class: "meta" }, "Priced " + (S.pricesAt ? S.pricesAt.replace("T", " ").slice(0, 16) + " IST" : "—") + " · data built " + S.book.built_at.replace("T", " ").slice(0, 16) + " IST ",
-          age > 26 ? el("span", { class: "pill warn", text: "prices stale" }) : null)),
+        (function () { const L = liveLabel(); return el("div", { id: "live", class: "live" + (L.live ? " on" : "") + (L.stale ? " stale" : ""), role: "status" }, el("span", { class: "dot", "aria-hidden": "true" }), el("span", { text: L.text })); })()),
       el("div", { class: "top-actions" }, seg,
         signOutBtn()),
       el("nav", { class: "jump", "aria-label": "Sections" },
@@ -327,25 +424,25 @@
     const hist = (S.book.history || []).filter(r => r.target);
     const gaps = hist.map(r => (r.total - r.target) / r.target);
     gaps[gaps.length - 1] = gp;                       // today's point priced live
-    const status = Math.abs(gp) <= band ? ["ok", "✓ On track"] : gp < 0 ? ["bad", "✕ Behind"] : ["ok", "✓ Ahead"];
+    const status = Math.abs(gp) <= band ? "ontrack" : gp < 0 ? "act" : "watch";
     const headline = Math.abs(gp) <= band
       ? (gap < 0 ? short(-gap) + " behind plan, inside the ±" + Math.round(band * 100) + "% band" : short(gap) + " ahead of plan")
       : (gap < 0 ? short(-gap) + " behind plan: outside the band" : short(gap) + " ahead of plan");
     const primary = el("div", { class: "kpi primary" },
       el("div", { class: "lab", text: "Book vs 5-5-15 plan" }),
-      el("div", { class: "kpi-head" }, el("span", { class: "big", text: pct(gp) }), el("span", { class: "pill " + status[0], text: status[1] })),
+      el("div", { class: "kpi-head" }, el("span", { class: "big", "data-count": gp, "data-fmt": "pct", text: pct(gp) }), pill(status)),
       el("div", { class: "sub", text: headline }),
       sparkline(gaps, { band, zero: true, label: "Gap to plan over time, now " + pct(gp) + "; shaded band is ±" + Math.round(band * 100) + "%" }),
       el("div", { class: "sub muted", text: "Book " + inr(book) + " · plan " + inr(tgtTotal) + " · " + hist.length + " day trend" }));
     const tCls = today.d > 0 ? "up" : today.d < 0 ? "down" : "";
     return el("div", { class: "kpis" }, primary,
-      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Book value (live)" }), el("div", { class: "big", text: short(book) }),
+      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Book value (live)" }), el("div", { class: "big", "data-count": Math.round(book), text: short(book) }),
         el("div", { class: "sub " + tCls, text: ARROW(today.d) + " " + inr(today.d, { sign: true }) + " (" + pct(today.pct, 2) + ") since last close / NAV" }),
         el("div", { class: "sub muted", text: inr(book - cost, { sign: true }) + " on cost " + short(cost) })),
-      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Salary left to invest · " + monthLabel(mkNow).split(" ")[0] }), el("div", { class: "big", text: inr(lp.salary) }),
+      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Salary left to invest · " + monthLabel(mkNow).split(" ")[0] }), el("div", { class: "big", "data-count": lp.salary, "data-fmt": "inr", text: inr(lp.salary) }),
         el("div", { class: "sub", text: lp.salary > 0 ? "due this month" : "✓ all of this month's salary is invested" }),
         lp.other ? el("div", { class: "sub muted", text: short(lp.other) + " of proceeds still to deploy" }) : null),
-      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Spendable in bank" }), el("div", { class: "big", text: inr(sp.result) }),
+      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Spendable in bank" }), el("div", { class: "big", "data-count": Math.round(sp.result), "data-fmt": "inr", text: inr(sp.result) }),
         el("div", { class: "sub", text: "after earmarks · balance as of " + niceDate(S.book.months.bank.as_of) })));
   }
 
@@ -399,7 +496,7 @@
     const list = el("ul", { class: "attn" }, items.map(it => {
       const ic = icon(it.sev);
       return el("li", null, el("span", { class: "attn-ic " + ic[0], "aria-hidden": "true", text: ic[1] }),
-        el("div", null, el("div", { class: "attn-what", text: it.what }), it.why ? el("div", { class: "small muted", text: it.why }) : null,
+        el("div", null, el("div", { class: "attn-what", text: it.what }), it.why ? el("div", { class: "meta", text: it.why }) : null,
           el("div", { class: "small" }, el("span", { class: "muted", text: "→ " }), it.act, it.jump ? el("a", { href: "#" + it.jump, class: "attn-go", onclick: (e) => { e.preventDefault(); const t = document.getElementById(it.jump); if (t) { if (t.tagName === "DETAILS") t.open = true; t.scrollIntoView({ behavior: "smooth" }); } }, text: " View" }) : null)));
     }));
     const need = items.filter(i => i.sev >= 2).length, watch = items.length - need;
@@ -464,9 +561,9 @@
         svg.append(sv("line", { x1: x0 + w, x2: x0 + bw, y1: y(lvl), y2: y(lvl), stroke: "var(--ink-3)" }));
       }
     });
-    svg.append(sv("text", { x: pl, y: H - 4 }, "Axis starts near " + short(floor) + " so the gaps are visible"));
+
     return el("figure", { class: "wf-fig" }, svg,
-      el("figcaption", { class: "small muted", text: "How the book gets from the plan to today's value: ▼ orange is below plan, ▲ blue is above. Dashed line = plan." }));
+      el("figcaption", { class: "meta", text: "How the book gets from the plan to today's value: ▼ orange is below plan, ▲ blue is above. Dashed line = plan." }));
   }
 
   // Cash-flow bucket ledger: planned vs actual money in and out to date, the growth that's left over, and why it differs.
@@ -483,64 +580,112 @@
     });
     rows.sort((a, b) => (a.ad || a.d) < (b.ad || b.d) ? -1 : 1).forEach(r => {
       const sign = r.dir === "out" ? -1 : 1;
-      const st = r.flag === "ok" ? ["ok", "✓ done"] : r.flag === "up" ? ["info", "upcoming"] : r.flag === "extra" ? ["info", "not in plan"] : ["warn", "! not yet"];
+      const st = r.flag === "ok" || r.flag === "extra" ? "done" : r.flag === "up" ? "upcoming" : "waiting";
       tb.append(el("tr", null,
-        el("td", null, el("div", { text: (r.dir === "out" ? "Out · " : "In · ") + r.label }), r.how ? el("div", { class: "small muted", text: r.how }) : null),
+        el("td", null, el("div", { text: (r.dir === "out" ? "Out · " : "In · ") + r.label }), r.how ? el("div", { class: "meta", text: r.how }) : null),
         el("td", { class: "n", text: niceDate(r.ad || r.d) }),
         el("td", { class: "n", text: r.plan === null ? "—" : inr(sign * r.plan, { sign: true }) }),
         el("td", { class: "n", text: r.act === null ? "—" : inr(sign * r.act, { sign: true }) }),
-        el("td", null, el("span", { class: "pill " + st[0], text: st[1] }))));
+        el("td", null, pill(st), r.flag === "extra" ? el("div", { class: "meta", text: "not in the plan" }) : null)));
     });
     tb.append(el("tr", { class: "total" }, el("td", { text: "Growth / market (value − net money in)" }), el("td"), el("td"), el("td", { class: "n", text: inr(growth, { sign: true }) }), el("td")));
     const why = (L.reasons || []).filter(r => !r.startsWith("Upcoming"));
-    return el("details", { class: "ledger" },
-      el("summary", null, el("span", { class: "small", text: "Money in and out · " + sumLine }), why.length ? el("div", { class: "small why", text: "Why it differs: " + why[0] }) : null),
+    return el("div", { class: "ledger" },
+      el("p", { class: "meta", text: sumLine }), why.length ? el("p", { class: "why", text: why[0] }) : null,
       el("div", { class: "tw" }, el("table", { class: "ledger-t" }, el("thead", null, el("tr", null, ["Flow", "Date", "Planned", "Actual", ""].map((h, i) => el("th", { class: i === 0 || i === 4 ? "" : "n", text: h })))), tb)),
       (L.reasons || []).length ? el("ul", { class: "list small" }, L.reasons.map(r => el("li", { text: r }))) : null);
   }
 
+  // ---- view 1: goal rows (icon/ring · name + goal · Now | Plan | Gap · status · chevron), expanding in place
+  function goalStatus(v, t, band) {
+    if (!t) return "ontrack";
+    const g = (v - t) / t;
+    if (Math.abs(g) <= band) return "ontrack";
+    const book = S._book, tgt = S._tgt;
+    if (g < 0 && Math.abs((book - tgt) / tgt) > band) return "act";
+    return "watch";
+  }
+  const ICONS = {   // 24×24 line icons
+    emergency: "M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z",
+    home_tds: "M7 3h10v18l-2.5-1.5L12 21l-2.5-1.5L7 21V3zM9.5 8h5M9.5 11.5h5M9.5 15h3",
+    home_fund: "M4 11l8-7 8 7M6 9.5V20h12V9.5M10 20v-5h4v5",
+    loan_reserve: "M3 9l9-5 9 5M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18",
+    childcare: "M12 20s-7-4.3-7-9.5A4 4 0 0 1 12 8a4 4 0 0 1 7 2.5C19 15.7 12 20 12 20z",
+    retirement: "M12 4v2M5 12H3M21 12h-2M6.3 6.3l1.4 1.4M17.7 6.3l-1.4 1.4M7 16a5 5 0 0 1 10 0M3 19h18",
+  };
+  function ring(frac, key) {
+    const R = 19, C = 2 * Math.PI * R, f = Math.max(0, Math.min(1, frac || 0));
+    const svg = sv("svg", { viewBox: "0 0 48 48", class: "ring", "aria-hidden": "true" });
+    svg.append(sv("circle", { cx: 24, cy: 24, r: R, fill: "none", stroke: "var(--line)", "stroke-width": 4 }));
+    if (frac !== null) {
+      const arc = sv("circle", { cx: 24, cy: 24, r: R, fill: "none", stroke: "var(--accent)", "stroke-width": 4, "stroke-linecap": "round",
+        "stroke-dasharray": C.toFixed(2), "stroke-dashoffset": (C * (1 - f)).toFixed(2), transform: "rotate(-90 24 24)", class: "ring-arc" });
+      arc.style.setProperty("--c", C.toFixed(2)); svg.append(arc);
+    }
+    const g = sv("g", { transform: "translate(14 14) scale(0.8333)" });
+    g.append(sv("path", { d: ICONS[key] || ICONS.retirement, fill: "none", stroke: "var(--ink-2)", "stroke-width": 1.8, "stroke-linecap": "round", "stroke-linejoin": "round" }));
+    svg.append(g);
+    return svg;
+  }
+  function bucketHoldings(key) {
+    const rows = valued().filter(h => h.buckets[key]).map(h => ({ h, v: (h.value || 0) * h.buckets[key], c: h.cost * h.buckets[key] })).sort((a, b) => b.v - a.v);
+    if (!rows.length) return el("p", { class: "meta", text: "Nothing in this bucket yet." });
+    return el("ul", { class: "mini" }, rows.map(r => el("li", null,
+      el("span", { class: "rowtitle", text: r.h.name.replace(/\s*\(.*?\)\s*/g, " ").trim() + (Object.keys(r.h.buckets).length > 1 ? " · " + Math.round(r.h.buckets[key] * 100) + "%" : "") }),
+      el("span", { class: "num", text: inr(r.v) }),
+      el("span", { class: "meta num " + (r.v - r.c >= 0 ? "upc" : "dn"), text: delta(r.v - r.c, r.c) }))));
+  }
+  function delta(d, base) {
+    if (d === null || isNaN(d)) return "—";
+    return (d > 0 ? "▲ " : d < 0 ? "▼ " : "") + short(Math.abs(d)) + (base ? " (" + pct(d / base) + ")" : "");
+  }
   function viewGoals(bt, T, book, tgtTotal) {
     const G = S.book.plan.goals, band = S.book.plan.band;
+    S._book = book; S._tgt = tgtTotal;
+    S.openB = S.openB || {};
     const wrap = el("div", { class: "goals" });
     S.book.bucket_defs.forEach(b => {
       const v = bt[b.key] || 0, t = T[b.key] || 0, g = G[b.key] || {};
       if (!v && !t && !g.target) return;
-      const gap = v - t, gp = t ? gap / t : 0;
-      let pill;
-      if (!t && !v) pill = el("span", { class: "pill info", text: "Not started" });
-      else if (!t) pill = el("span", { class: "pill info", text: "No plan value yet" });
-      else if (Math.abs(gp) <= band) pill = el("span", { class: "pill ok", text: "On track" });
-      else if (gp < 0) pill = el("span", { class: "pill bad", text: "Behind" });
-      else pill = el("span", { class: "pill ok", text: "Ahead" });
-      const goal = g.target || null;
-      const fill = goal ? Math.min(1, v / goal) : (t ? Math.min(1, v / (t * 1.2)) : 0);
-      const mark = goal ? Math.min(1, t / goal) : (t ? 1 / 1.2 : 0);
-      const nums = [el("span", null, "Now " + inr(v)), el("span", null, "Plan today " + inr(t)), el("span", null, "Gap " + inr(gap, { sign: true }) + (t ? " (" + pct(gp) + ")" : ""))];
-      if (goal) nums.push(el("span", null, "Goal " + short(goal) + (g.date ? " by " + niceDate(g.date) : "")));
-      if (b.key === "home_fund") {
-        if (S.book.plan.funded_now) nums.push(el("span", null, "Funded " + Math.round(S.book.plan.funded_now * 100) + "%"));
-        const s = S.book.plan.stress || {}; const k = Object.keys(s)[0];
-        if (k) nums.push(el("span", null, "Stress (" + k + "): short " + inr(s[k])));
-      }
-      if (b.key === "retirement" && g.projection_dec_2036) nums.push(el("span", null, "Plan path: " + short(g.projection_dec_2036) + " by Dec 2036"));
-      if (b.key === "loan_reserve" && g.alt) nums.push(el("span", null, g.alt_note || ("Alternative: " + inr(g.alt))));
-      const row = el("div", { class: "goal", role: "button", tabindex: "0", "aria-current": S.bucket === b.key ? "true" : "false",
-        onclick: () => { S.bucket = S.bucket === b.key ? null : b.key; render(); },
-        onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); S.bucket = S.bucket === b.key ? null : b.key; render(); } } },
-        el("div", null, el("div", { class: "gname", text: b.label }), el("div", { class: "gnote", text: b.note })),
-        el("div", { class: "gbar" }, el("div", { class: "meter" }, el("i", { style: "width:" + (fill * 100).toFixed(1) + "%" }), mark ? el("b", { style: "left:" + (mark * 100).toFixed(1) + "%" }) : null), el("div", { class: "gnums" }, nums)),
-        pill);
+      const gap = v - t;
+      const goal = g.target || (b.key === "home_tds" && g.outflows ? g.outflows.reduce((a, o) => a + o[1], 0) : null);
+      const goalLine = b.key === "retirement" ? "Goal " + short(goal) + " · plan path " + short(g.projection_dec_2036) + " by Dec 2036"
+        : b.key === "home_tds" ? "Covers the next " + (g.outflows || []).length + " TDS payments (" + short(goal) + ")"
+        : goal ? "Goal " + short(goal) + (g.date ? " by " + niceDate(g.date) : "") : b.note;
+      const open = !!S.openB[b.key];
+      const toggle = () => { S.openB[b.key] = !open; render(); };
+      const row = el("div", { class: "goal" + (open ? " open" : ""), role: "button", tabindex: "0", "aria-expanded": open ? "true" : "false",
+        onclick: toggle, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } } },
+        ring(goal ? v / goal : null, b.key),
+        el("div", { class: "g-name" }, el("div", { class: "rowtitle", text: b.label }), el("div", { class: "meta", text: goalLine })),
+        el("div", { class: "g-cols" },
+          el("div", null, el("div", { class: "lab", text: "Now" }), el("div", { class: "num", "data-count": Math.round(v), text: short(v) })),
+          el("div", null, el("div", { class: "lab", text: "Plan" }), el("div", { class: "num", text: short(t) })),
+          el("div", null, el("div", { class: "lab", text: "Gap" }), el("div", { class: "num " + (gap < 0 ? "dn" : gap > 0 ? "upc" : ""), text: t ? delta(gap) : "—" }))),
+        pill(goalStatus(v, t, band)),
+        el("span", { class: "chev", "aria-hidden": "true", text: "›" }));
       wrap.append(row);
-      const L = (S.book.ledgers || {})[b.key];
-      if (L) wrap.append(ledgerBlock(L, v));
+      if (open) {
+        const L = (S.book.ledgers || {})[b.key];
+        const extra = [];
+        if (b.key === "home_fund") {
+          const st = S.book.plan.stress || {}; const k = Object.keys(st)[0];
+          extra.push(el("p", { class: "meta", text: "Funded " + Math.round((S.book.plan.funded_now || 0) * 100) + "% of the 2029 bills, counting the money still to come" + (k ? " · if markets fall 20% in Mar 2029, short by " + short(st[k]) : "") }));
+        }
+        if (b.key === "loan_reserve" && g.alt_note) extra.push(el("p", { class: "meta", text: g.alt_note }));
+        wrap.append(el("div", { class: "g-panel" },
+          extra,
+          L ? el("div", null, el("div", { class: "lab", text: "Money in and out" }), ledgerBlock(L, v)) : null,
+          el("div", null, el("div", { class: "lab", text: "What's in it" }), bucketHoldings(b.key))));
+      }
     });
     const adj = Array.from(new Set((S.book.plan.active_adjustments || []).map(a => a.replace(/ \(money still sits[^)]*\)/, ""))));
     return el("section", { class: "view", id: "goals" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "1 · Goals · am I on track, bucket by bucket?" }), el("h2", { text: goalsInsight(bt, T) })),
-        el("span", { class: "q", text: "Plan = 5-5-15 sim for " + S.book.plan.target_month + " · On track within ±" + Math.round(S.book.plan.band * 100) + "% · tap a bucket to see what's in it" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Goals" }), el("h2", { text: goalsInsight(bt, T) }),
+        el("div", { class: "meta", text: "Against the 5-5-15 plan for " + S.book.plan.target_month + " · on track within ±" + Math.round(band * 100) + "% · open a bucket for its money in and out" }))),
       gapWaterfall(bt, T, book, tgtTotal),
       wrap,
-      adj.length ? el("p", { class: "small muted" }, "Timing adjustments in the plan values: " + adj.join("; ")) : null);
+      adj.length ? el("p", { class: "meta", text: "Plan timing: " + adj.join("; ") }) : null);
   }
 
   function holdingsInsight(rows) {
@@ -570,10 +715,10 @@
         const split = Object.keys(h.buckets).length > 1 ? " (" + Math.round(w * 100) + "% of the line)" : "";
         const isAmt = h.kind === "liquid" || h.kind === "cash" || h.nav_static === 1;
         tb.append(el("tr", null,
-          el("td", null, el("div", { text: h.name + split }), el("div", { class: "small muted" }, h.app + (h.pending ? " · " : ""), h.pending ? el("span", { class: "pill warn", text: "awaiting allotment" }) : null)),
+          el("td", null, el("div", { text: h.name + split }), el("div", { class: "meta" }, h.app + (h.pending ? " · " : ""), h.pending ? pill("waiting", "· allotment") : null)),
           el("td", { class: "n", text: isAmt ? "₹ amount" : (h.units * w).toLocaleString("en-IN", { maximumFractionDigits: 3 }) }),
-          el("td", { class: "n" }, el("div", { text: h.price === null ? "—" : (isAmt ? "—" : h.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })) }), el("div", { class: "small muted", text: isAmt ? "" : h.priceAt })),
-          el("td", { class: "n", text: inr(v) }),
+          el("td", { class: "n" }, el("div", { text: h.price === null ? "—" : (isAmt ? "—" : h.price.toLocaleString("en-IN", { maximumFractionDigits: 2 })) }), el("div", { class: "meta", text: isAmt ? "" : h.priceAt })),
+          el("td", { class: "n" + (S.flash && h.key && S.flash[h.key] ? " flash-" + S.flash[h.key] : ""), text: inr(v) }),
           el("td", { class: "n", text: inr(c) }),
           el("td", { class: "n", text: inr(v - c, { sign: true }) + (c ? " " + pct((v - c) / c) : "") })));
       });
@@ -582,7 +727,7 @@
     });
     if (!S.bucket) tb.append(el("tr", { class: "total" }, el("td", { text: "Whole book" }), el("td"), el("td"), el("td", { class: "n", text: inr(grand) }), el("td"), el("td")));
     return el("section", { class: "view", id: "holdings" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "2 · Holdings · what I hold, by bucket" }), el("h2", { text: holdingsInsight(rows) })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Holdings" }), el("h2", { text: holdingsInsight(rows) })),
         el("span", { class: "q", text: "Units as of " + S.book.units_as_of + " · values = units × latest price" })),
       chips,
       el("div", { class: "tw" }, el("table", { class: "hold" }, el("thead", null, el("tr", null, el("th", { text: "Holding" }), el("th", { class: "n", text: "Units" }), el("th", { class: "n", text: "Price / NAV" }), el("th", { class: "n", text: "Value" }), el("th", { class: "n", text: "Cost" }), el("th", { class: "n", text: "Gain" }))), tb)));
@@ -603,12 +748,11 @@
   function leftToInvest(m) { const o = leftParts(m); return o.salary + o.other; }
   function statusPill(l) {
     const today = ymd(istNow());
-    if (l.status === "done") return el("span", { class: "pill ok", text: "Done" });
-    if (l.status === "partly") return el("span", { class: "pill warn", text: "Partly" });
-    if (l.status === "conditional") return el("span", { class: "pill info", text: "Conditional" });
-    if (l.status === "skipped") return el("span", { class: "pill info", text: "Skipped" });
-    if (l.due && l.due < today) return el("span", { class: "pill bad", text: "Overdue" });
-    return el("span", { class: "pill warn", text: l.due ? "Due " + niceDate(l.due) : "Due" });
+    if (l.status === "done" || l.status === "skipped") return pill("done");
+    if (l.status === "conditional") return pill("waiting");
+    if (l.due && l.due < today) return pill("overdue", niceDate(l.due));
+    if (l.due && l.due > today) return pill("upcoming", niceDate(l.due));
+    return pill("due", l.due ? niceDate(l.due) : "");
   }
   function viewChecklist(mk) {
     const m = monthData(mk);
@@ -617,11 +761,11 @@
     all.forEach(l => box.append(el("div", { class: "check" },
       statusPill(l),
       el("div", null, el("div", { text: l.label })),
-      el("div", { class: "n num" }, el("div", { text: l.planned === null || l.planned === undefined ? "—" : inr(l.planned) }), l.status === "done" && l.done !== null && l.done !== undefined && l.done !== l.planned ? el("div", { class: "small muted", text: "done " + inr(l.done) }) : null),
+      el("div", { class: "n num" }, el("div", { text: l.planned === null || l.planned === undefined ? "—" : inr(l.planned) }), l.status === "done" && l.done !== null && l.done !== undefined && l.done !== l.planned ? el("div", { class: "meta", text: "done " + inr(l.done) }) : null),
       (l.how || l.date) ? el("div", { class: "how", text: [l.date ? niceDate(l.date) : "", l.how || ""].filter(Boolean).join(" · ") }) : null)));
     const lp = leftParts(m);
     return el("section", { class: "view", id: "checklist" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "3 · This month's money · have I invested everything due?" }), el("h2", { text: (function () { const o = leftParts(m); return o.salary > 0 ? inr(o.salary) + " of " + monthLabel(mk) + " salary still to invest" : (m.generated ? monthLabel(mk) + ": " + inr([].concat(m.lines).filter(l => l.kind === "invest").reduce((a, l) => a + (l.planned || 0), 0)) + " to invest from salary" : "✓ All of " + monthLabel(mk) + "'s salary money is invested") + (o.other ? " · " + short(o.other) + " of proceeds due" : ""); })() })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "This month" }), el("h2", { text: (function () { const o = leftParts(m); return o.salary > 0 ? inr(o.salary) + " of " + monthLabel(mk) + " salary still to invest" : (m.generated ? monthLabel(mk) + ": " + inr([].concat(m.lines).filter(l => l.kind === "invest").reduce((a, l) => a + (l.planned || 0), 0)) + " to invest from salary" : "✓ All of " + monthLabel(mk) + "'s salary money is invested") + (o.other ? " · " + short(o.other) + " of proceeds due" : ""); })() })),
         el("span", { class: "q", text: m.generated ? "From the 5-5-15 plan (no actuals yet)" + (m.note ? " · " + m.note.slice(0, 120) : "") : "Plan lines and what actually happened" })),
       box,
       el("div", { class: "foot" }, el("span", { text: "Salary money left to invest in " + monthLabel(mk) }), el("span", { class: "num", text: inr(lp.salary) })),
@@ -662,12 +806,12 @@
     const cc = S.book.cc, ks = Object.keys(cc.months).sort(), last = cc.months[ks[ks.length - 1]];
     const over = last.regular_total - cc.budget;
     const ccBox = el("div", null,
-      el("div", { class: "eyebrow", text: "Card · last statement" }),
+      el("div", { class: "eyebrow", text: "Card" }),
       el("div", { class: "big num", style: "font-size:22px;font-weight:650", text: inr(last.regular_total) }),
-      el("div", { class: "small" }, "Regular spend in " + last.label + " vs " + short(cc.budget) + " budget: ", el("span", { class: "pill " + (over > 0 ? "bad" : "ok"), text: over > 0 ? inr(over) + " over" : inr(-over) + " under" })),
-      el("div", { class: "small muted", text: "Plus one-offs " + inr(last.outlier_total) + " · statement total " + inr(last.declared_total) + (last.due_date ? " · due " + niceDate(last.due_date) : "") + (last.paid_on ? " · paid " + niceDate(last.paid_on) : "") }));
+      el("div", { class: "small" }, "Regular spend in " + last.label + " vs " + short(cc.budget) + " budget: ", pill(over > 0 ? "watch" : "ontrack", over > 0 ? "· " + short(over) + " over" : "· " + short(-over) + " under")),
+      el("div", { class: "meta", text: "Plus one-offs " + inr(last.outlier_total) + " · statement total " + inr(last.declared_total) + (last.due_date ? " · due " + niceDate(last.due_date) : "") + (last.paid_on ? " · paid " + niceDate(last.paid_on) : "") }));
     return el("section", { class: "view", id: "bank" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "4 · Bank · what's actually spendable?" }), el("h2", { text: mk === monthKey(0) ? inr(sp.result) + " is spendable until the next salary" : monthLabel(mk) + " leaves " + inr(sp.result) + " after the plan and living costs" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Bank" }), el("h2", { text: mk === monthKey(0) ? inr(sp.result) + " is spendable until the next salary" : monthLabel(mk) + " leaves " + inr(sp.result) + " after the plan and living costs" })),
         el("span", { class: "q", text: sp.note })),
       el("div", { class: "two" }, wf, ccBox));
   }
@@ -676,19 +820,19 @@
   function viewCalendar(mk) {
     const today = ymd(istNow());
     const items = (S.book.calendar || []).filter(e => e.date.slice(0, 7) === mk);
-    const tb = el("tbody");
-    items.forEach(e => {
-      const st = e.done ? ["ok", "Done"] : e.date < today ? ["info", "Past"] : e.date === today ? ["warn", "Today"] : ["ok", "Upcoming"];
-      if (st[1] === "Upcoming") st[0] = "info";
-      tb.append(el("tr", { class: st[1] === "Past" || st[1] === "Done" ? "past" : null },
-        el("td", { class: "n" }, el("div", { text: niceDate(e.date) }), el("div", { class: "small muted", text: e.time ? e.time + " IST" : "all day" })),
-        el("td", null, el("div", { text: e.title }), e.desc ? el("div", { class: "small muted", text: e.desc.slice(0, 220) + (e.desc.length > 220 ? "…" : "") }) : null),
-        el("td", null, el("span", { class: "pill " + st[0], text: st[1] }), e.recurring ? el("div", { class: "small muted", text: "repeats" }) : null)));
-    });
+    const ahead = items.filter(e => !e.done && e.date >= today), earlier = items.filter(e => e.done || e.date < today);
+    const rowOf = (e, kind) => el("tr", { class: kind === "earlier" ? "past" : null },
+      el("td", null, el("div", { class: "rowtitle", text: e.title }), e.desc ? el("div", { class: "meta clamp", text: e.desc }) : null),
+      el("td", { class: "n" }, el("div", { class: "num", text: niceDate(e.date) }), el("div", { class: "meta", text: e.time ? e.time + " IST" : "all day" })),
+      el("td", null, kind === "earlier" ? (e.done ? pill("done") : el("span", { class: "meta", text: "past" })) : pill(e.date === today ? "due" : "upcoming", e.date === today ? "today" : "")));
+    const tbA = el("tbody", null, ahead.map(e => rowOf(e, "ahead")));
+    const titleTxt = ahead.length ? ahead.length + " action" + (ahead.length > 1 ? "s" : "") + " left in " + monthLabel(mk) + " · next " + niceDate(ahead[0].date) : "✓ No actions left in " + monthLabel(mk);
     return el("section", { class: "view", id: "calendar" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "5 · Calendar · what do I need to do?" }), el("h2", { text: (function () { const t = ymd(istNow()); const left = items.filter(e => !e.done && e.date >= t); return left.length ? left.length + " action" + (left.length > 1 ? "s" : "") + " left in " + monthLabel(mk) + " · next " + niceDate(left[0].date) : "✓ No actions left in " + monthLabel(mk); })() })),
-        el("span", { class: "q", text: "Money events from your Google Calendar" })),
-      items.length ? el("div", { class: "tw" }, el("table", { "data-labels": "When|What|Status", class: "cal" }, tb)) : el("p", { class: "muted", text: "Nothing on the calendar for " + monthLabel(mk) + " yet." }));
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Calendar" }), el("h2", { text: titleTxt }),
+        el("div", { class: "meta", text: "Money items from your Google Calendar" }))),
+      ahead.length ? el("div", { class: "tw" }, el("table", { "data-labels": "What|When|Status", class: "cal" }, tbA)) : null,
+      earlier.length ? el("details", { class: "earlier" }, el("summary", { class: "meta", text: "Earlier this month (" + earlier.length + ")" }),
+        el("div", { class: "tw" }, el("table", { "data-labels": "What|When|Status", class: "cal" }, el("tbody", null, earlier.map(e => rowOf(e, "earlier")))))) : null);
   }
 
   // ---- supporting detail
@@ -706,24 +850,24 @@
       if (m.paid && !showPaid) return;
       const slip = m.actual && m.planned ? Math.round((new Date(m.actual) - new Date(m.planned)) / 86400000) : null;
       tb.append(el("tr", null,
-        el("td", null, el("div", { text: m.n + " · " + m.name }), el("div", { class: "small muted", text: (m.pct || "") + "" })),
+        el("td", null, el("div", { text: m.n + " · " + m.name }), el("div", { class: "meta", text: (m.pct || "") + "" })),
         el("td", { class: "n", text: niceDate(m.planned) }),
         el("td", { class: "n" }, m.actual ? niceDate(m.actual) : "—", slip !== null ? el("div", { class: "small " + (slip > 0 ? "" : "muted"), text: slip === 0 ? "on time" : (slip > 0 ? slip + " d late" : -slip + " d early") }) : null),
         el("td", { class: "n", text: inr(m.total) }),
-        el("td", { class: "n" }, el("div", { text: inr(m.tds) }), el("div", { class: "small muted", text: inr((m.tds || 0) / 2) + " each" })),
+        el("td", { class: "n" }, el("div", { text: inr(m.tds) }), el("div", { class: "meta", text: inr((m.tds || 0) / 2) + " each" })),
         el("td", { class: "n", text: inr(m.net_due) }),
-        el("td", null, el("span", { class: "pill " + (m.paid ? "ok" : "info"), text: m.paid ? "Paid" : "To come" }))));
+        el("td", null, pill(m.paid ? "done" : "upcoming"))));
     });
     const pays = el("tbody");
     A.payments.forEach(p => {
       const u = p.link ? safeUrl(p.link) : null;
       pays.append(el("tr", null,
         el("td", { class: "n", text: p.date }),
-        el("td", null, el("div", { text: p.desc }), el("div", { class: "small muted", text: p.towards + (p.self === "N" ? " · paid by the lender" : "") })),
+        el("td", null, el("div", { text: p.desc }), el("div", { class: "meta", text: p.towards + (p.self === "N" ? " · paid by the lender" : "") })),
         el("td", { class: "n", text: inr(p.amount) }),
-        el("td", null, u ? el("a", { href: u, target: "_blank", rel: "noopener noreferrer", text: "Proof" }) : el("span", { class: "pill bad", text: "No proof" }),
-          p.cert ? el("div", { class: "small muted", text: "16B " + p.cert }) : null,
-          p.check ? el("div", { class: "small muted", text: p.check.slice(0, 80) }) : el("div", { class: "small" }, el("span", { class: "pill warn", text: "unchecked" })))));
+        el("td", null, u ? el("a", { href: u, target: "_blank", rel: "noopener noreferrer", text: "Proof" }) : pill("due", "· proof missing"),
+          p.cert ? el("div", { class: "meta", text: "16B " + p.cert }) : null,
+          p.check ? el("div", { class: "meta", text: p.check.slice(0, 80) }) : el("div", { class: "meta", text: "proof not checked yet" }))));
     });
     const extras = A.extras.map(x => el("li", null, x.name + ": " + inr(x.amount) + (x.planned ? " (" + niceDate(x.planned) + ")" : "")));
     return det("assetz", A.title || "The flat", paid.length + " of " + ms.length + " milestones paid · " + short(pt) + " of " + short(tot) + " · next: " + (next[0] ? next[0].name + " (" + niceDate(next[0].planned) + ")" : "—"),
@@ -732,11 +876,11 @@
           tile("Paid so far", short(pt), [Math.round(pt / tot * 100) + "% of the price"]),
           tile("Still to come", short(tot - pt), [next.length + " near-term milestones"]),
           tile("Next TDS", next[0] ? inr(next[0].tds) : "—", [next[0] ? "2 × " + inr(next[0].tds / 2) + " · " + niceDate(next[0].planned) : ""])),
-        el("div", { class: "row-between" }, el("h3", { class: "small muted", text: "PAYMENT PLAN" }),
+        el("div", { class: "row-between" }, el("h3", { class: "meta", text: "PAYMENT PLAN" }),
           el("button", { type: "button", class: "chip", "aria-pressed": showPaid ? "true" : "false", onclick: () => { S.showPaid = !showPaid; render(); }, text: showPaid ? "Hide paid (" + paid.length + ")" : "Show paid (" + paid.length + ")" })),
         el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["Milestone", "Planned", "Actual", "Total", "TDS 1%", "Net to builder", ""].map((h, i) => el("th", { class: i === 0 || i === 6 ? "" : "n", text: h })))), tb)),
         el("p", { class: "small" }, "On top of the price: "), el("ul", { class: "list small" }, extras),
-        el("h3", { class: "small muted", text: "PAYMENTS AND PROOFS" }),
+        el("h3", { class: "meta", text: "PAYMENTS AND PROOFS" }),
         el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["Date", "What", "Amount", "Proof"].map((h, i) => el("th", { class: i === 2 || i === 0 ? "n" : "", text: h })))), pays))));
   }
 
@@ -794,7 +938,7 @@
     const under = ks.filter(k => cc.months[k].regular_total <= cc.budget).length;
     return det("cards", "Card: " + last.label + " regular spend " + short(last.regular_total) + " · under budget in " + under + " of " + ks.length + " months", "Regular spend vs the " + short(cc.budget) + " budget (dashed); grey = one-offs such as property TDS",
       el("div", null, svg, el("div", { class: "legend" }, el("span", null, el("i", { style: "background:var(--pos)" }), "Regular, under budget"), el("span", null, el("i", { style: "background:var(--neg)" }), "Regular, over (labelled ▲)"), el("span", null, el("i", { style: "background:var(--bar)" }), "One-offs")),
-        el("p", { class: "small muted", text: last.label + ": " + Object.entries(last.categories).filter(e => e[1]).map(e => e[0] + " " + inr(e[1])).join(" · ") })));
+        el("p", { class: "meta", text: last.label + ": " + Object.entries(last.categories).filter(e => e[1]).map(e => e[0] + " " + inr(e[1])).join(" · ") })));
   }
   function detailsStocks(rows) {
     const tb = el("tbody");
@@ -806,10 +950,10 @@
         return w.type + " " + w.level + ": " + w.action;
       });
       tb.append(el("tr", null,
-        el("td", null, el("div", { text: s.sym }), el("div", { class: "small muted", text: s.units + " sh" })),
+        el("td", null, el("div", { text: s.sym }), el("div", { class: "meta", text: s.units + " sh" })),
         el("td", { class: "n", text: p ? p.toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "—" }),
-        el("td", null, c.call ? el("span", { class: "pill " + (c.call === "BUY" || c.call === "ADD" ? "ok" : c.call === "HOLD" ? "info" : "bad"), text: c.call }) : "—", c.date ? el("div", { class: "small muted", text: niceDate(c.date) + " · " + (c.conviction || "") }) : null),
-        el("td", { class: "n" }, c.target ? inr(c.target) : "—", c.target && p ? el("div", { class: "small muted", text: pct(c.target / p - 1) }) : null),
+        el("td", null, c.call ? el("span", { class: "tag", text: c.call }) : "—", c.date ? el("div", { class: "meta", text: niceDate(c.date) + " · " + (c.conviction || "") }) : null),
+        el("td", { class: "n" }, c.target ? inr(c.target) : "—", c.target && p ? el("div", { class: "meta", text: pct(c.target / p - 1) }) : null),
         el("td", null, rules.length ? el("ul", { class: "list small" }, rules.map(r => el("li", { text: r.slice(0, 160) }))) : el("span", { class: "muted", text: "—" }))));
     });
     return det("stocks", "Stocks · calls and exit rules", "Latest research call per holding; rules from each research page's Watch table",
@@ -825,12 +969,12 @@
       ["Card statement", (Object.values(S.book.cc.months).slice(-1)[0] || {}).statement_date || "", "you send it to Finn"],
     ];
     const tb = el("tbody");
-    items.forEach(i => tb.append(el("tr", null, el("td", { text: i[0] }), el("td", { class: "n", text: (i[1] || "—").replace("T", " ").slice(0, 16) }), el("td", { class: "small muted", text: i[2] }))));
+    items.forEach(i => tb.append(el("tr", null, el("td", { text: i[0] }), el("td", { class: "n", text: (i[1] || "—").replace("T", " ").slice(0, 16) }), el("td", { class: "meta", text: i[2] }))));
     const drift = S.book.drift || [], gaps = S.book.gaps || [];
     return det("health", "Data freshness and sync", (drift.length ? drift.length + " sync issue(s)" : "Sources in sync") + (gaps.length ? " · " + gaps.length + " record gap(s)" : "") + (st.prices_failed ? " · " + st.prices_failed + " price(s) failed" : ""),
       el("div", null,
         el("div", { class: "tw" }, el("table", null, tb)),
-        drift.length ? el("div", null, el("h3", { class: "small muted", text: "SYNC ISSUES (state files vs sheets)" }), el("ul", { class: "list small" }, drift.map(d => el("li", { text: d })))) : null,
-        gaps.length ? el("div", null, el("h3", { class: "small muted", text: "RECORD GAPS" }), el("ul", { class: "list small" }, gaps.map(d => el("li", { text: d })))) : null));
+        drift.length ? el("div", null, el("h3", { class: "meta", text: "SYNC ISSUES (state files vs sheets)" }), el("ul", { class: "list small" }, drift.map(d => el("li", { text: d })))) : null,
+        gaps.length ? el("div", null, el("h3", { class: "meta", text: "RECORD GAPS" }), el("ul", { class: "list small" }, gaps.map(d => el("li", { text: d })))) : null));
   }
 })();
