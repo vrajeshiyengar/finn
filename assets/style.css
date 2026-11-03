@@ -4,7 +4,7 @@
   --bg: #eef1f3; --panel: #fbfcfc; --ink: #15212b; --ink-2: #4a5864; --ink-3: #7d8a95;
   --line: #d6dde2; --accent: #0d6b6b; --accent-soft: #d6ebe9;
   --ok: #1d7a3a; --ok-bg: #dcefe1; --warn: #9a6200; --warn-bg: #f6e7c8; --bad: #b3261e; --bad-bg: #f6dcd9;
-  --info-bg: #e3e9f2; --bar: #9db3c2;
+  --info-bg: #e3e9f2; --bar: #9db3c2; --pos: #2f6db3; --neg: #d0731c;
   --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color-scheme: light;
@@ -14,7 +14,7 @@
     --bg: #0f161c; --panel: #151f27; --ink: #e6edf2; --ink-2: #a9b6c0; --ink-3: #7b8994;
     --line: #26333d; --accent: #4fb6ad; --accent-soft: #173533;
     --ok: #5cc27c; --ok-bg: #173323; --warn: #e2ad4c; --warn-bg: #3a2c12; --bad: #f0857c; --bad-bg: #3d1c1a;
-    --info-bg: #1c2733; --bar: #3e5566;
+    --info-bg: #1c2733; --bar: #3e5566; --pos: #6aa6e8; --neg: #f0a050;
     color-scheme: dark;
   }
 }
@@ -197,3 +197,44 @@ body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-a
 @media (max-width: 640px) { .view { scroll-margin-top: 176px; } }
 
 tr.past { opacity: .6; }
+
+/* ---------------------------------------------------------------- KPI cards (primary = plan check) */
+.kpis { display: grid; grid-template-columns: 1.6fr repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; min-width: 0; display: grid; gap: 3px; align-content: start; }
+.kpi .lab { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-3); }
+.kpi .big { font-size: 24px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
+.kpi .sub { font-size: 12.5px; color: var(--ink-2); }
+.kpi .sub.up { color: var(--pos); font-weight: 650; }
+.kpi .sub.down { color: var(--neg); font-weight: 650; }
+.kpi.primary { border-color: var(--accent); }
+.kpi.primary .big { font-size: 30px; }
+.kpi-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.spark { width: 100%; height: 44px; margin-top: 4px; }
+@media (max-width: 900px) { .kpis { grid-template-columns: 1fr 1fr; } .kpi.primary { grid-column: 1 / -1; } }
+
+/* ---------------------------------------------------------------- needs attention */
+.attention { border-left: 4px solid var(--accent); }
+.attn { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.attn li { display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 10px; align-items: start; }
+.attn-ic { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-weight: 800; font-size: 12px; }
+.attn-ic.bad { background: var(--bad-bg); color: var(--bad); }
+.attn-ic.warn { background: var(--warn-bg); color: var(--warn); }
+.attn-ic.info { background: var(--info-bg); color: var(--ink-2); }
+.attn-what { font-weight: 600; }
+.attn-go { font-weight: 650; text-decoration: none; }
+
+/* ---------------------------------------------------------------- waterfall */
+.wf-fig { margin: 0 0 12px; }
+svg text.wf-v { fill: var(--ink); font-weight: 650; }
+
+.gapbars { margin: 0 0 12px; display: grid; gap: 6px; }
+.gb-row { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; font-size: 13px; }
+.gb-total { grid-template-columns: 1fr auto; font-weight: 700; border-top: 1px solid var(--line); padding-top: 6px; }
+.gb-total:first-child { border-top: 0; padding-top: 0; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.gb-track { position: relative; height: 10px; background: linear-gradient(to right, transparent calc(50% - 1px), var(--ink-3) calc(50% - 1px), var(--ink-3) calc(50% + 1px), transparent calc(50% + 1px)); }
+.gb-track i { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.gb-track i.neg { background: var(--neg); }
+.gb-track i.pos { background: var(--pos); }
+.num.dn { color: var(--neg); font-weight: 650; }
+.num.upc { color: var(--pos); font-weight: 650; }
+@media (max-width: 900px) { .kpis > .kpi:nth-child(4) { grid-column: 1 / -1; } }

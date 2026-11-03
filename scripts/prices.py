@@ -36,11 +36,14 @@ def get(url):
 
 
 def fetch(s):
+    """(price, label, previous close or previous NAV)."""
     if s["src"] == "yahoo":
         m = get("https://query1.finance.yahoo.com/v8/finance/chart/%s?range=1d&interval=1d" % urllib.parse.quote(s["sym"]))["chart"]["result"][0]["meta"]
-        return float(m["regularMarketPrice"]), dt.datetime.fromtimestamp(m["regularMarketTime"], IST).strftime("%d %b %H:%M IST")
-    d = get("https://api.mfapi.in/mf/%s" % s["code"])["data"][0]
-    return float(d["nav"]), "NAV " + dt.datetime.strptime(d["date"], "%d-%m-%Y").strftime("%d %b")
+        pc = m.get("chartPreviousClose") or m.get("previousClose")
+        return float(m["regularMarketPrice"]), dt.datetime.fromtimestamp(m["regularMarketTime"], IST).strftime("%d %b %H:%M IST"), (float(pc) if pc else None)
+    data = get("https://api.mfapi.in/mf/%s" % s["code"])["data"]
+    d = data[0]
+    return float(d["nav"]), "NAV " + dt.datetime.strptime(d["date"], "%d-%m-%Y").strftime("%d %b"), (float(data[1]["nav"]) if len(data) > 1 else None)
 
 
 def main():
@@ -52,7 +55,7 @@ def main():
     for key_, s in syms.items():
         for attempt in range(3):
             try:
-                p, at = fetch(s); prices[key_] = {"p": p, "at": at}; break
+                p, at, pc = fetch(s); prices[key_] = {"p": p, "at": at, "pc": pc}; break
             except Exception as e:
                 if attempt == 2: failed.append(key_.split(":")[0] + ":" + type(e).__name__)
                 time.sleep(2)

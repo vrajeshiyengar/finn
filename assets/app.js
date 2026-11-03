@@ -206,8 +206,10 @@
     const mk = monthKey(S.month), mkNow = monthKey(0);
 
     root.append(header(mk));
-    root.append(strip(book, cost, tgtTotal, mkNow));
-    root.append(viewGoals(bt, T));
+    const today = todayMove(rows);
+    root.append(kpiRow(book, cost, tgtTotal, mkNow, today));
+    root.append(attention(rows, bt, T, mkNow));
+    root.append(viewGoals(bt, T, book, tgtTotal));
     root.append(viewHoldings(rows, bt));
     root.append(viewChecklist(mk));
     root.append(viewBank(mk));
@@ -250,25 +252,181 @@
           .map(([id, lab]) => el("a", { href: "#" + id, onclick: (e) => { e.preventDefault(); const t = document.getElementById(id); if (t) { if (t.tagName === "DETAILS") t.open = true; t.scrollIntoView({ behavior: "smooth", block: "start" }); } }, text: lab }))));
   }
 
-  function strip(book, cost, tgtTotal, mkNow) {
-    const gap = book - tgtTotal;
-    const m = monthData(mkNow);
-    const lp = leftParts(m);
+  // ---------------------------------------------------------------- KPI row (≤5 cards; the primary one is the plan check)
+  const ARROW = v => v > 0 ? "▲" : v < 0 ? "▼" : "■";
+  function todayMove(rows) {
+    let d = 0, base = 0; const movers = [];
+    rows.forEach(h => {
+      if (!h.key || h.pending) return;
+      const pr = S.prices[h.key]; if (!pr || !pr.pc || pr.p === null) return;
+      const ch = h.units * (pr.p - pr.pc); d += ch; base += h.units * pr.pc;
+      movers.push({ name: h.name.replace(/\s*\(.*?\)\s*/g, " ").trim(), ch, pc: pr.p / pr.pc - 1 });
+    });
+    movers.sort((a, b) => a.ch - b.ch);
+    return { d, pct: base ? d / base : 0, worst: movers.slice(0, 3), best: movers.slice(-3).reverse() };
+  }
+  function sparkline(vals, opts) {
+    const W = 220, H = 44, p = 3;
+    const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, class: "spark", role: "img", "aria-label": opts.label });
+    if (vals.length < 2) { svg.append(sv("text", { x: 0, y: H / 2 + 4 }, "trend builds daily")); return svg; }
+    const lo = Math.min.apply(null, vals.concat(opts.band ? [-opts.band] : [])), hi = Math.max.apply(null, vals.concat(opts.band ? [opts.band] : []));
+    const x = i => p + (W - 2 * p) * i / (vals.length - 1), y = v => p + (H - 2 * p) * (1 - (v - lo) / ((hi - lo) || 1));
+    if (opts.band) svg.append(sv("rect", { x: p, y: y(opts.band), width: W - 2 * p, height: Math.max(1, y(-opts.band) - y(opts.band)), fill: "var(--accent-soft)" }));
+    if (opts.zero) svg.append(sv("line", { x1: p, x2: W - p, y1: y(0), y2: y(0), stroke: "var(--ink-3)", "stroke-dasharray": "3 3" }));
+    svg.append(sv("path", { d: vals.map((v, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1)).join(" "), fill: "none", stroke: "var(--ink)", "stroke-width": 1.6 }));
+    svg.append(sv("circle", { cx: x(vals.length - 1), cy: y(vals[vals.length - 1]), r: 3, fill: "var(--accent)" }));
+    return svg;
+  }
+  function kpiRow(book, cost, tgtTotal, mkNow, today) {
+    const gap = book - tgtTotal, gp = gap / tgtTotal, band = S.book.plan.band;
+    const lp = leftParts(monthData(mkNow));
     const sp = spendable(mkNow);
-    const nextAct = (S.book.calendar || []).filter(e => !e.done && e.date >= ymd(istNow())).slice(0, 1)[0];
-    const band = S.book.plan.band;
-    const st = Math.abs(gap / tgtTotal) <= band ? ["ok", "On track"] : gap < 0 ? ["bad", "Behind plan"] : ["ok", "Ahead of plan"];
-    return el("div", { class: "strip" },
-      tile("Book (live)", short(book), [inr(book - cost, { sign: true }) + " on cost " + short(cost)]),
-      tile("vs 5-5-15 plan", inr(gap, { sign: true }), [el("span", { class: "pill " + st[0], text: st[1] }), " " + pct(gap / tgtTotal) + " of " + short(tgtTotal)]),
-      tile("Salary left to invest · " + monthLabel(mkNow), inr(lp.salary), [lp.salary > 0 ? "due this month" : "salary money all invested", lp.other ? " · plus " + short(lp.other) + " from redemptions/proceeds" : ""]),
-      tile("Spendable in bank", inr(sp.result), ["as of " + niceDate(S.book.months.bank.as_of)]),
-      tile("Next action", nextAct ? niceDate(nextAct.date) : "—", [nextAct ? nextAct.title.slice(0, 60) : "nothing scheduled"]));
+    const hist = (S.book.history || []).filter(r => r.target);
+    const gaps = hist.map(r => (r.total - r.target) / r.target);
+    gaps[gaps.length - 1] = gp;                       // today's point priced live
+    const status = Math.abs(gp) <= band ? ["ok", "✓ On track"] : gp < 0 ? ["bad", "✕ Behind"] : ["ok", "✓ Ahead"];
+    const headline = Math.abs(gp) <= band
+      ? (gap < 0 ? short(-gap) + " behind plan, inside the ±" + Math.round(band * 100) + "% band" : short(gap) + " ahead of plan")
+      : (gap < 0 ? short(-gap) + " behind plan: outside the band" : short(gap) + " ahead of plan");
+    const primary = el("div", { class: "kpi primary" },
+      el("div", { class: "lab", text: "Book vs 5-5-15 plan" }),
+      el("div", { class: "kpi-head" }, el("span", { class: "big", text: pct(gp) }), el("span", { class: "pill " + status[0], text: status[1] })),
+      el("div", { class: "sub", text: headline }),
+      sparkline(gaps, { band, zero: true, label: "Gap to plan over time, now " + pct(gp) + "; shaded band is ±" + Math.round(band * 100) + "%" }),
+      el("div", { class: "sub muted", text: "Book " + inr(book) + " · plan " + inr(tgtTotal) + " · " + hist.length + " day trend" }));
+    const tCls = today.d > 0 ? "up" : today.d < 0 ? "down" : "";
+    return el("div", { class: "kpis" }, primary,
+      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Book value (live)" }), el("div", { class: "big", text: short(book) }),
+        el("div", { class: "sub " + tCls, text: ARROW(today.d) + " " + inr(today.d, { sign: true }) + " (" + pct(today.pct, 2) + ") since last close / NAV" }),
+        el("div", { class: "sub muted", text: inr(book - cost, { sign: true }) + " on cost " + short(cost) })),
+      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Salary left to invest · " + monthLabel(mkNow).split(" ")[0] }), el("div", { class: "big", text: inr(lp.salary) }),
+        el("div", { class: "sub", text: lp.salary > 0 ? "due this month" : "✓ all of this month's salary is invested" }),
+        lp.other ? el("div", { class: "sub muted", text: short(lp.other) + " of proceeds still to deploy" }) : null),
+      el("div", { class: "kpi" }, el("div", { class: "lab", text: "Spendable in bank" }), el("div", { class: "big", text: inr(sp.result) }),
+        el("div", { class: "sub", text: "after earmarks · balance as of " + niceDate(S.book.months.bank.as_of) })));
+  }
+
+  // ---------------------------------------------------------------- Needs attention (status · driver · action)
+  function attention(rows, bt, T, mkNow) {
+    const items = [], today = ymd(istNow()), band = S.book.plan.band;
+    const soon = new Date(istNow().getTime() + 3 * 86400000);
+    const soonS = ymd(soon);
+    // calendar actions due in the next 3 days
+    (S.book.calendar || []).filter(e => !e.done && e.date >= today && e.date <= soonS).forEach(e =>
+      items.push({ sev: e.date === today ? 2 : 1, what: (e.date === today ? "Today" : niceDate(e.date)) + (e.time ? " " + e.time : "") + " · " + e.title, act: "On your calendar", jump: "calendar" }));
+    // buckets outside the band
+    S.book.bucket_defs.forEach(b => {
+      const v = bt[b.key] || 0, t = T[b.key] || 0; if (!t) return;
+      const g = (v - t) / t;
+      if (g < -band) {
+        const drags = rows.filter(h => h.buckets[b.key] && h.value !== null && h.cost).map(h => ({ n: h.name.replace(/\s*\(.*?\)\s*/g, " ").trim(), d: (h.value - h.cost) * h.buckets[b.key] })).sort((a, c) => a.d - c.d).slice(0, 3);
+        const bookOk = Math.abs((Object.keys(bt).reduce((a, k) => a + bt[k], 0) - Object.values(T).reduce((a, x) => a + x, 0)) / Object.values(T).reduce((a, x) => a + x, 0)) <= band;
+        items.push({ sev: bookOk ? 1 : 2, what: b.label + " is " + pct(g) + " vs plan (" + inr(v - t, { sign: true }) + ")", why: "Biggest drags: " + drags.map(x => x.n + " " + inr(x.d, { sign: true })).join(", "), act: "Market, not missed money: no top-up. Exit rules and results checks handle the weak names.", jump: "goals" });
+      }
+    });
+    // stock rules close to firing
+    (S.book.stocks || []).forEach(st => {
+      const pr = S.prices[st.key]; if (!pr) return;
+      (st.watch || []).forEach(w => {
+        if (!w.type.startsWith("close")) return;
+        const lvl = parseFloat(w.level); if (!lvl) return;
+        const d = (pr.p - lvl) / lvl, below = w.type === "close<";
+        const breached = below ? pr.p < lvl : pr.p > lvl;
+        if (breached) items.push({ sev: 3, what: st.sym + " at " + pr.p.toFixed(2) + " is past its " + w.type + " " + lvl + " line", act: w.action, jump: "stocks" });
+        else if (below && d < 0.03) items.push({ sev: 1, what: st.sym + " is " + pct(d) + " above its exit line " + lvl, act: "If it closes below: " + w.action, jump: "stocks" });
+      });
+    });
+    // salary money not yet invested
+    const lp = leftParts(monthData(mkNow));
+    if (lp.salary > 0) items.push({ sev: 2, what: inr(lp.salary) + " of " + monthLabel(mkNow) + " salary money is not invested yet", act: "See the month checklist", jump: "checklist" });
+    // pending allotments
+    const pend = rows.filter(h => h.pending);
+    if (pend.length) items.push({ sev: 1, what: pend.length + " order(s) awaiting allotment (" + short(pend.reduce((a, h) => a + h.cost, 0)) + ")", act: "Valued at cost until units arrive", jump: "holdings" });
+    // loan interest overtaking the SI
+    const P = S.book.plan.path, cur = P.findIndex(r => r.m === monthLabel(mkNow));
+    const over = P.slice(Math.max(0, cur), cur + 3).find(r => r.interest > r.si);
+    if (over) items.push({ sev: 1, what: "From " + over.m + ", loan interest " + inr(over.interest) + " exceeds the SI " + inr(over.si), act: "Raise the SI or prepay (decision on your calendar)", jump: "loan" });
+    // data health
+    if ((S.book.drift || []).length) items.push({ sev: 2, what: S.book.drift.length + " sync issue(s) between the dashboard and your sheets", act: "Ask Finn to reconcile", jump: "health" });
+    const age = S.pricesAt ? (Date.now() - new Date(S.pricesAt).getTime()) / 3600000 : 99;
+    if (age > 26) items.push({ sev: 2, what: "Prices are " + Math.round(age) + " h old", act: "Check the price job (Health)", jump: "health" });
+
+    items.sort((a, b) => b.sev - a.sev);
+    const icon = s => s >= 3 ? ["bad", "✕"] : s === 2 ? ["warn", "!"] : ["info", "i"];
+    const list = el("ul", { class: "attn" }, items.map(it => {
+      const ic = icon(it.sev);
+      return el("li", null, el("span", { class: "attn-ic " + ic[0], "aria-hidden": "true", text: ic[1] }),
+        el("div", null, el("div", { class: "attn-what", text: it.what }), it.why ? el("div", { class: "small muted", text: it.why }) : null,
+          el("div", { class: "small" }, el("span", { class: "muted", text: "→ " }), it.act, it.jump ? el("a", { href: "#" + it.jump, class: "attn-go", onclick: (e) => { e.preventDefault(); const t = document.getElementById(it.jump); if (t) { if (t.tagName === "DETAILS") t.open = true; t.scrollIntoView({ behavior: "smooth" }); } }, text: " View" }) : null)));
+    }));
+    const need = items.filter(i => i.sev >= 2).length, watch = items.length - need;
+    const title = need ? need + " item" + (need > 1 ? "s" : "") + " need" + (need > 1 ? "" : "s") + " you" + (watch ? " · " + watch + " to watch" : "") : "✓ Nothing needs you right now" + (watch ? " · " + watch + " to watch" : "");
+    return el("section", { class: "view attention", id: "attention", "aria-label": "Needs attention" },
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Needs attention" }), el("h2", { text: title }))),
+      items.length ? list : el("p", { class: "muted", text: "All buckets inside the band, no rule close to firing, data fresh." }));
   }
   function tile(lab, big, sub) { return el("div", { class: "tile" }, el("div", { class: "lab", text: lab }), el("div", { class: "big", text: big }), el("div", { class: "sub" }, sub)); }
 
   // ---- view 1
-  function viewGoals(bt, T) {
+  function goalsInsight(bt, T) {
+    const band = S.book.plan.band;
+    const gaps = S.book.bucket_defs.map(b => ({ l: b.label, g: (bt[b.key] || 0) - (T[b.key] || 0), t: T[b.key] || 0 })).filter(x => x.t);
+    const worst = gaps.slice().sort((a, b) => a.g - b.g)[0];
+    const out = gaps.filter(x => Math.abs(x.g / x.t) > band && x.g < 0);
+    if (!out.length) return "Every bucket is on track; the biggest gap is " + worst.l + " at " + inr(worst.g, { sign: true });
+    const o = out.sort((a, b) => a.g - b.g);
+    return o.map(x => x.l + " is " + short(-x.g) + " behind (" + pct(x.g / x.t) + ")").join("; ") + "; " + (gaps.length - o.length === 0 ? "" : "every other bucket is on track or ahead");
+  }
+  // Waterfall: plan total → each bucket's gap → actual total. Orange = below plan, blue = above (colour-blind safe), signs on every bar.
+  function gapBars(bt, T, book, tgtTotal) {
+    const parts = S.book.bucket_defs.map(b => ({ l: b.label, d: (bt[b.key] || 0) - (T[b.key] || 0) })).filter(x => Math.abs(x.d) >= 500).sort((a, b) => a.d - b.d);
+    const max = Math.max.apply(null, parts.map(p => Math.abs(p.d)).concat([1]));
+    return el("figure", { class: "gapbars", "aria-label": "Gap to plan by bucket. " + parts.map(p => p.l + " " + inr(p.d, { sign: true })).join(", ") },
+      el("div", { class: "gb-row gb-total" }, el("span", { text: "Plan today" }), el("span", { class: "num", text: inr(tgtTotal) })),
+      parts.map(p => el("div", { class: "gb-row" }, el("span", { text: p.l }),
+        el("span", { class: "gb-track" }, el("i", { class: p.d < 0 ? "neg" : "pos", style: "width:" + (Math.abs(p.d) / max * 50).toFixed(1) + "%;" + (p.d < 0 ? "right:50%" : "left:50%") })),
+        el("span", { class: "num " + (p.d < 0 ? "dn" : "upc"), text: (p.d < 0 ? "▼ " : "▲ ") + short(Math.abs(p.d)) }))),
+      el("div", { class: "gb-row gb-total" }, el("span", { text: "Actual" }), el("span", { class: "num", text: inr(book) })));
+  }
+  function gapWaterfall(bt, T, book, tgtTotal) {
+    if (window.matchMedia && window.matchMedia("(max-width: 640px)").matches) return gapBars(bt, T, book, tgtTotal);
+    const parts = S.book.bucket_defs.map(b => ({ l: b.label, d: (bt[b.key] || 0) - (T[b.key] || 0) })).filter(x => Math.abs(x.d) >= 500).sort((a, b) => b.d - a.d);
+    const W = 720, H = 210, pl = 8, pr = 8, pt = 22, pb = 46;
+    const steps = [{ l: "Plan today", v: tgtTotal, kind: "total" }].concat(parts.map(p => ({ l: p.l, v: p.d, kind: "delta" }))).concat([{ l: "Actual", v: book, kind: "total" }]);
+    let run = tgtTotal; const bars = [];
+    steps.forEach(st => {
+      if (st.kind === "total") bars.push({ l: st.l, a: 0, b: st.v, v: st.v, kind: "total" });
+      else { bars.push({ l: st.l, a: run, b: run + st.v, v: st.v, kind: st.v < 0 ? "neg" : "pos" }); run += st.v; }
+    });
+    // zoom the y-axis to the top of the bars so the deltas are visible; mark the axis break
+    const tops = bars.map(b => Math.max(b.a, b.b)).concat(bars.filter(b => b.kind !== "total").map(b => Math.min(b.a, b.b)));
+    const hi = Math.max.apply(null, tops), lo = Math.min.apply(null, bars.filter(b => b.kind !== "total").map(b => Math.min(b.a, b.b)).concat([Math.min(book, tgtTotal)]));
+    const span = (hi - lo) || 1, floor = lo - span * 0.6, ceil = hi + span * 0.15;
+    const y = v => pt + (H - pt - pb) * (1 - (Math.max(v, floor) - floor) / (ceil - floor));
+    const bw = (W - pl - pr) / bars.length;
+    const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, class: "chart", role: "img",
+      "aria-label": "Waterfall from plan " + inr(tgtTotal) + " to actual " + inr(book) + ". " + parts.map(p => p.l + " " + inr(p.d, { sign: true })).join(", ") + "." });
+    svg.append(sv("line", { x1: pl, x2: W - pr, y1: y(tgtTotal), y2: y(tgtTotal), stroke: "var(--ink-3)", "stroke-dasharray": "4 3" }));
+    bars.forEach((b, i) => {
+      const x0 = pl + i * bw + bw * 0.18, w = bw * 0.64;
+      const top = y(Math.max(b.a, b.b)), bot = b.kind === "total" ? H - pb : y(Math.min(b.a, b.b));
+      const fill = b.kind === "total" ? "var(--ink-2)" : b.kind === "neg" ? "var(--neg)" : "var(--pos)";
+      svg.append(sv("rect", { x: x0, y: top, width: w, height: Math.max(2, bot - top), fill, rx: 2 }));
+      svg.append(sv("text", { x: x0 + w / 2, y: top - 6, "text-anchor": "middle", class: "wf-v" }, b.kind === "total" ? short(b.v) : (b.v > 0 ? "▲ " : "▼ ") + short(Math.abs(b.v))));
+      const words = b.l.split(/[: ]+/).filter(Boolean); const l1 = words.slice(0, 2).join(" "), l2 = words.slice(2).join(" ");
+      svg.append(sv("text", { x: x0 + w / 2, y: H - pb + 16, "text-anchor": "middle" }, l1));
+      if (l2) svg.append(sv("text", { x: x0 + w / 2, y: H - pb + 30, "text-anchor": "middle" }, l2));
+      if (i < bars.length - 1 && b.kind !== "total" || i === 0) {
+        const lvl = b.kind === "total" ? b.b : b.b;
+        svg.append(sv("line", { x1: x0 + w, x2: x0 + bw, y1: y(lvl), y2: y(lvl), stroke: "var(--ink-3)" }));
+      }
+    });
+    svg.append(sv("text", { x: pl, y: H - 4 }, "Axis starts near " + short(floor) + " so the gaps are visible"));
+    return el("figure", { class: "wf-fig" }, svg,
+      el("figcaption", { class: "small muted", text: "How the book gets from the plan to today's value: ▼ orange is below plan, ▲ blue is above. Dashed line = plan." }));
+  }
+
+  function viewGoals(bt, T, book, tgtTotal) {
     const G = S.book.plan.goals, band = S.book.plan.band;
     const wrap = el("div", { class: "goals" });
     S.book.bucket_defs.forEach(b => {
@@ -303,12 +461,19 @@
     });
     const adj = Array.from(new Set((S.book.plan.active_adjustments || []).map(a => a.replace(/ \(money still sits[^)]*\)/, ""))));
     return el("section", { class: "view", id: "goals" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "1 · Goals" }), el("h2", { text: "Am I on track, bucket by bucket?" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "1 · Goals · am I on track, bucket by bucket?" }), el("h2", { text: goalsInsight(bt, T) })),
         el("span", { class: "q", text: "Plan = 5-5-15 sim for " + S.book.plan.target_month + " · On track within ±" + Math.round(S.book.plan.band * 100) + "% · tap a bucket to see what's in it" })),
+      gapWaterfall(bt, T, book, tgtTotal),
       wrap,
       adj.length ? el("p", { class: "small muted" }, "Timing adjustments in the plan values: " + adj.join("; ")) : null);
   }
 
+  function holdingsInsight(rows) {
+    const t = todayMove(rows);
+    const f = (m) => m.name.split(" ").slice(0, 3).join(" ") + " " + pct(m.pc);
+    if (!t.best.length) return "Units × latest price, split by bucket";
+    return "Last move " + ARROW(t.d) + " " + inr(t.d, { sign: true }) + " · best " + f(t.best[0]) + " · worst " + f(t.worst[0]);
+  }
   // ---- view 2
   function viewHoldings(rows, bt) {
     const defs = S.book.bucket_defs;
@@ -342,7 +507,7 @@
     });
     if (!S.bucket) tb.append(el("tr", { class: "total" }, el("td", { text: "Whole book" }), el("td"), el("td"), el("td", { class: "n", text: inr(grand) }), el("td"), el("td")));
     return el("section", { class: "view", id: "holdings" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "2 · Holdings" }), el("h2", { text: "What I hold, and which bucket it belongs to" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "2 · Holdings · what I hold, by bucket" }), el("h2", { text: holdingsInsight(rows) })),
         el("span", { class: "q", text: "Units as of " + S.book.units_as_of + " · values = units × latest price" })),
       chips,
       el("div", { class: "tw" }, el("table", { class: "hold" }, el("thead", null, el("tr", null, el("th", { text: "Holding" }), el("th", { class: "n", text: "Units" }), el("th", { class: "n", text: "Price / NAV" }), el("th", { class: "n", text: "Value" }), el("th", { class: "n", text: "Cost" }), el("th", { class: "n", text: "Gain" }))), tb)));
@@ -381,7 +546,7 @@
       (l.how || l.date) ? el("div", { class: "how", text: [l.date ? niceDate(l.date) : "", l.how || ""].filter(Boolean).join(" · ") }) : null)));
     const lp = leftParts(m);
     return el("section", { class: "view", id: "checklist" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "3 · This month's money" }), el("h2", { text: "Have I invested everything due in " + monthLabel(mk) + "?" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "3 · This month's money · have I invested everything due?" }), el("h2", { text: (function () { const o = leftParts(m); return o.salary > 0 ? inr(o.salary) + " of " + monthLabel(mk) + " salary still to invest" : (m.generated ? monthLabel(mk) + ": " + inr([].concat(m.lines).filter(l => l.kind === "invest").reduce((a, l) => a + (l.planned || 0), 0)) + " to invest from salary" : "✓ All of " + monthLabel(mk) + "'s salary money is invested") + (o.other ? " · " + short(o.other) + " of proceeds due" : ""); })() })),
         el("span", { class: "q", text: m.generated ? "From the 5-5-15 plan (no actuals yet)" + (m.note ? " · " + m.note.slice(0, 120) : "") : "Plan lines and what actually happened" })),
       box,
       el("div", { class: "foot" }, el("span", { text: "Salary money left to invest in " + monthLabel(mk) }), el("span", { class: "num", text: inr(lp.salary) })),
@@ -427,7 +592,7 @@
       el("div", { class: "small" }, "Regular spend in " + last.label + " vs " + short(cc.budget) + " budget: ", el("span", { class: "pill " + (over > 0 ? "bad" : "ok"), text: over > 0 ? inr(over) + " over" : inr(-over) + " under" })),
       el("div", { class: "small muted", text: "Plus one-offs " + inr(last.outlier_total) + " · statement total " + inr(last.declared_total) + (last.due_date ? " · due " + niceDate(last.due_date) : "") + (last.paid_on ? " · paid " + niceDate(last.paid_on) : "") }));
     return el("section", { class: "view", id: "bank" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "4 · Bank" }), el("h2", { text: mk === monthKey(0) ? "What's actually spendable?" : "What will " + monthLabel(mk) + " leave me?" })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "4 · Bank · what's actually spendable?" }), el("h2", { text: mk === monthKey(0) ? inr(sp.result) + " is spendable until the next salary" : monthLabel(mk) + " leaves " + inr(sp.result) + " after the plan and living costs" })),
         el("span", { class: "q", text: sp.note })),
       el("div", { class: "two" }, wf, ccBox));
   }
@@ -446,7 +611,7 @@
         el("td", null, el("span", { class: "pill " + st[0], text: st[1] }), e.recurring ? el("div", { class: "small muted", text: "repeats" }) : null)));
     });
     return el("section", { class: "view", id: "calendar" },
-      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "5 · Calendar" }), el("h2", { text: "Action items in " + monthLabel(mk) })),
+      el("header", null, el("div", null, el("div", { class: "eyebrow", text: "5 · Calendar · what do I need to do?" }), el("h2", { text: (function () { const t = ymd(istNow()); const left = items.filter(e => !e.done && e.date >= t); return left.length ? left.length + " action" + (left.length > 1 ? "s" : "") + " left in " + monthLabel(mk) + " · next " + niceDate(left[0].date) : "✓ No actions left in " + monthLabel(mk); })() })),
         el("span", { class: "q", text: "Money events from your Google Calendar" })),
       items.length ? el("div", { class: "tw" }, el("table", { "data-labels": "When|What|Status", class: "cal" }, tb)) : el("p", { class: "muted", text: "Nothing on the calendar for " + monthLabel(mk) + " yet." }));
   }
@@ -506,12 +671,13 @@
     const max = Math.max.apply(null, series.flatMap(s => s.pts.map(p => p.y))) * 1.08 || 1;
     const x = i => pl + (W - pl - pr) * (n > 1 ? i / (n - 1) : 0), y = v => pt + (H - pt - pb) * (1 - v / max);
     const svg = sv("svg", { viewBox: "0 0 " + W + " " + H, class: "chart", role: "img", "aria-label": opts.label });
-    for (let i = 0; i <= 4; i++) { const v = max * i / 4; svg.append(sv("line", { x1: pl, x2: W - pr, y1: y(v), y2: y(v), stroke: "var(--line)" }), sv("text", { x: pl - 6, y: y(v) + 4, "text-anchor": "end" }, short(v))); }
+    for (let i = 0; i <= 2; i++) { const v = max * i / 2; svg.append(sv("line", { x1: pl, x2: W - pr, y1: y(v), y2: y(v), stroke: "var(--line)" }), sv("text", { x: pl - 6, y: y(v) + 4, "text-anchor": "end" }, short(v))); }
     const step = Math.max(1, Math.round(n / 8));
     series[0].pts.forEach((p, i) => { if (i % step === 0) svg.append(sv("text", { x: x(i), y: H - 8, "text-anchor": "middle" }, p.x)); });
     series.forEach(s => {
       svg.append(sv("path", { d: s.pts.map((p, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(p.y).toFixed(1)).join(" "), fill: "none", stroke: s.color, "stroke-width": 2 }));
       const L = s.pts[s.pts.length - 1]; svg.append(sv("circle", { cx: x(n - 1), cy: y(L.y), r: 3, fill: s.color }));
+      svg.append(sv("text", { x: x(n - 1) - 4, y: y(L.y) - 7, "text-anchor": "end", class: "wf-v" }, s.name + " " + short(L.y)));
     });
     return el("div", null, svg, el("div", { class: "legend" }, series.map(s => el("span", null, el("i", { style: "background:" + s.color }), s.name))));
   }
@@ -520,8 +686,8 @@
     const firstOver = P.find(r => r.interest > r.si);
     return det("loan", "Home loan · interest vs what goes in", firstOver ? "Interest passes the SI in " + firstOver.m + " (" + inr(firstOver.interest) + " vs " + inr(firstOver.si) + ")" : "SI covers interest throughout",
       el("div", null,
-        lineChart([{ name: "Monthly interest", color: "var(--bad)", pts: P.map(r => ({ x: r.m.replace(" 20", " '"), y: r.interest })) },
-                   { name: "Loan SI paid", color: "var(--accent)", pts: P.map(r => ({ x: r.m.replace(" 20", " '"), y: r.si })) }], { label: "Interest vs SI" }),
+        lineChart([{ name: "Monthly interest", color: "var(--neg)", pts: P.map(r => ({ x: r.m.replace(" 20", " '"), y: r.interest })) },
+                   { name: "Loan SI paid", color: "var(--pos)", pts: P.map(r => ({ x: r.m.replace(" 20", " '"), y: r.si })) }], { label: "Interest vs SI" }),
         lineChart([{ name: "Loan outstanding", color: "var(--ink-2)", pts: S.book.plan.path.filter((r, i) => i % 3 === 0).map(r => ({ x: r.m.replace(" 20", " '"), y: r.loan })) }], { label: "Loan balance" })));
   }
   function detailsSalary() {
@@ -530,7 +696,7 @@
     P.forEach(r => tb.append(el("tr", null, el("td", { text: r.m }), el("td", { class: "n", text: inr(r.salary) }), el("td", { class: "n", text: inr(r.si) }), el("td", { class: "n", text: inr(r.home) }), el("td", { class: "n", text: inr(r.child) }), el("td", { class: "n", text: inr(r.ret) }), el("td", { class: "n", text: inr(r.rent + r.living) }), el("td", { class: "n", text: short(r.ret_fund) }))));
     return det("salary", "Salary and where it goes", S.book.plan.salary_note || "",
       el("div", null,
-        lineChart([{ name: "Take-home", color: "var(--accent)", pts: P.map(r => ({ x: r.m.slice(-4), y: r.salary })) }, { name: "Loan SI", color: "var(--bad)", pts: P.map(r => ({ x: r.m.slice(-4), y: r.si })) }, { name: "Retirement flow", color: "var(--ok)", pts: P.map(r => ({ x: r.m.slice(-4), y: r.ret })) }], { label: "Salary path" }),
+        lineChart([{ name: "Take-home", color: "var(--accent)", pts: P.map(r => ({ x: r.m.slice(-4), y: r.salary })) }, { name: "Loan SI", color: "var(--neg)", pts: P.map(r => ({ x: r.m.slice(-4), y: r.si })) }, { name: "Retirement flow", color: "var(--ink-3)", pts: P.map(r => ({ x: r.m.slice(-4), y: r.ret })) }], { label: "Salary path" }),
         el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["Month", "Take-home", "Loan SI", "Home", "Child", "Retirement", "Living", "Retirement fund"].map((h, i) => el("th", { class: i ? "n" : "", text: h })))), tb))));
   }
   function detailsCards() {
@@ -544,13 +710,15 @@
     svg.append(sv("line", { x1: pl, x2: W - 10, y1: y(cc.budget), y2: y(cc.budget), stroke: "var(--ink)", "stroke-dasharray": "4 3" }));
     ks.forEach((k, i) => {
       const m = cc.months[k], x0 = pl + i * bw + bw * 0.2, w = bw * 0.6;
-      svg.append(sv("rect", { x: x0, y: y(m.regular_total), width: w, height: (H - pb) - y(m.regular_total), fill: m.regular_total > cc.budget ? "var(--bad)" : "var(--accent)" }));
+      svg.append(sv("rect", { x: x0, y: y(m.regular_total), width: w, height: (H - pb) - y(m.regular_total), fill: m.regular_total > cc.budget ? "var(--neg)" : "var(--pos)" }));
       if (m.outlier_total) svg.append(sv("rect", { x: x0, y: y(m.declared_total), width: w, height: y(m.regular_total) - y(m.declared_total), fill: "var(--bar)" }));
       svg.append(sv("text", { x: x0 + w / 2, y: H - 8, "text-anchor": "middle" }, m.label.slice(0, 3)));
+      svg.append(sv("text", { x: x0 + w / 2, y: y(m.regular_total) - 4, "text-anchor": "middle", class: "wf-v" }, (m.regular_total > cc.budget ? "▲" : "") + short(m.regular_total)));
     });
     const last = cc.months[ks[ks.length - 1]];
-    return det("cards", "Card spend by month", "Regular spend vs the " + short(cc.budget) + " budget (dashed); grey = one-offs such as property TDS",
-      el("div", null, svg, el("div", { class: "legend" }, el("span", null, el("i", { style: "background:var(--accent)" }), "Regular, under budget"), el("span", null, el("i", { style: "background:var(--bad)" }), "Regular, over"), el("span", null, el("i", { style: "background:var(--bar)" }), "One-offs")),
+    const under = ks.filter(k => cc.months[k].regular_total <= cc.budget).length;
+    return det("cards", "Card: " + last.label + " regular spend " + short(last.regular_total) + " · under budget in " + under + " of " + ks.length + " months", "Regular spend vs the " + short(cc.budget) + " budget (dashed); grey = one-offs such as property TDS",
+      el("div", null, svg, el("div", { class: "legend" }, el("span", null, el("i", { style: "background:var(--pos)" }), "Regular, under budget"), el("span", null, el("i", { style: "background:var(--neg)" }), "Regular, over (labelled ▲)"), el("span", null, el("i", { style: "background:var(--bar)" }), "One-offs")),
         el("p", { class: "small muted", text: last.label + ": " + Object.entries(last.categories).filter(e => e[1]).map(e => e[0] + " " + inr(e[1])).join(" · ") })));
   }
   function detailsStocks(rows) {
