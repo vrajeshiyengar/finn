@@ -425,3 +425,8 @@ table.lots th, table.lots td { padding: 5px 6px; font-size: 12.5px; }
 .brand-logo { width: 100%; max-width: 260px; height: auto; display: block; margin: 4px 0 6px; }
 .brand-mark.sm { width: 28px; height: 28px; border-radius: 0; background: none; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* 1D change line under a number */
+.d1 { font-size: 11.5px; font-weight: 650; margin-top: 1px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.d1.flat { color: var(--ink-3); font-weight: 500; }
+.d1.upc { color: var(--pos); } .d1.dn { color: var(--neg); }

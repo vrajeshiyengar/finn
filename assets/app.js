@@ -351,6 +351,7 @@
 
     root.append(header(mk));
     const today = todayMove(rows);
+    S._oneDayBook = oneDay(rows); S._rows = rows;
     root.append(kpiRow(book, cost, tgtTotal, mkNow, today));
     root.append(attention(rows, bt, T, mkNow));
     root.append(viewGoals(bt, T, book, tgtTotal));
@@ -415,6 +416,25 @@
 
   // ---------------------------------------------------------------- KPI row (≤5 cards; the primary one is the plan check)
   const ARROW = v => v > 0 ? "▲" : v < 0 ? "▼" : "■";
+  // 1D change: latest price vs previous market close (stocks/ETFs) or previous NAV (funds), per unit held.
+  // lines: valued holding rows; bucket: optional bucket key to weight by that bucket's share.
+  function oneDay(lines, bucket) {
+    let d = 0, base = 0;
+    lines.forEach(h => {
+      const w = bucket ? (h.buckets[bucket] || 0) : 1;
+      if (!w) return;
+      const pr = h.key ? S.prices[h.key] : null;
+      if (pr && pr.pc && pr.p !== null && !h.pending) { d += h.units * w * (pr.p - pr.pc); base += h.units * w * pr.pc; }
+      else base += (h.value || 0) * w;
+    });
+    return { d, base, pct: base ? d / base : 0 };
+  }
+  function d1(o, opts) {
+    if (!o || (!o.d && !(opts && opts.showZero))) return el("div", { class: "d1 flat", text: "1D —" });
+    const cls = o.d > 0 ? "upc" : o.d < 0 ? "dn" : "flat";
+    return el("div", { class: "d1 " + cls, title: "Change since the previous market close (stocks/ETFs) or previous NAV (funds)" },
+      "1D " + (o.d > 0 ? "▲ " : o.d < 0 ? "▼ " : "") + short(Math.abs(o.d)) + " (" + pct(o.pct, 2) + ")");
+  }
   function todayMove(rows) {
     let d = 0, base = 0; const movers = [];
     rows.forEach(h => {
@@ -453,12 +473,13 @@
       el("div", { class: "lab", text: "Book vs 5-5-15 plan" }),
       el("div", { class: "kpi-head" }, el("span", { class: "big", "data-count": gp, "data-fmt": "pct", text: pct(gp) }), pill(status)),
       el("div", { class: "sub", text: headline }),
+      d1(S._oneDayBook),
       sparkline(gaps, { band, zero: true, label: "Gap to plan over time, now " + pct(gp) + "; shaded band is ±" + Math.round(band * 100) + "%" }),
       el("div", { class: "sub muted", text: "Book " + inr(book) + " · plan " + inr(tgtTotal) + " · " + hist.length + " day trend" }));
-    const tCls = today.d > 0 ? "up" : today.d < 0 ? "down" : "";
+    const tCls = S._oneDayBook.d > 0 ? "up" : S._oneDayBook.d < 0 ? "down" : "";
     return el("div", { class: "kpis" }, primary,
       el("div", { class: "kpi" }, el("div", { class: "lab", text: "Book value (live)" }), el("div", { class: "big", "data-count": Math.round(book), text: short(book) }),
-        el("div", { class: "sub " + tCls, text: ARROW(today.d) + " " + inr(today.d, { sign: true }) + " (" + pct(today.pct, 2) + ") since last close / NAV" }),
+        el("div", { class: "sub " + tCls, text: "1D " + ARROW(S._oneDayBook.d) + " " + inr(S._oneDayBook.d, { sign: true }) + " (" + pct(S._oneDayBook.pct, 2) + ") vs last close / NAV" }),
         el("div", { class: "sub muted", text: inr(book - cost, { sign: true }) + " on cost " + short(cost) })),
       el("div", { class: "kpi" }, el("div", { class: "lab", text: "Salary left to invest · " + monthLabel(mkNow).split(" ")[0] }), el("div", { class: "big", "data-count": lp.salary, "data-fmt": "inr", text: inr(lp.salary) }),
         el("div", { class: "sub", text: lp.salary > 0 ? "due this month" : "✓ all of this month's salary is invested" }),
@@ -685,7 +706,7 @@
         ring(goal ? v / goal : null, b.key),
         el("div", { class: "g-name" }, el("div", { class: "rowtitle", text: b.label }), el("div", { class: "meta", text: goalLine })),
         el("div", { class: "g-cols" },
-          el("div", null, el("div", { class: "lab", text: "Now" }), el("div", { class: "num", "data-count": Math.round(v), text: short(v) })),
+          el("div", null, el("div", { class: "lab", text: "Now" }), el("div", { class: "num", "data-count": Math.round(v), text: short(v) }), d1(oneDay((S._rows || []).filter(h => h.buckets[b.key]), b.key))),
           el("div", null, el("div", { class: "lab", text: "Plan" }), el("div", { class: "num", text: short(t) })),
           el("div", null, el("div", { class: "lab", text: "Gap" }), el("div", { class: "num " + (gap < 0 ? "dn" : gap > 0 ? "upc" : ""), text: t ? delta(gap) : "—" }))),
         pill(goalStatus(v, t, band, (S.book.ledgers || {})[b.key])),
@@ -839,7 +860,7 @@
         return g;
       }).sort((a, b) => b.value - a.value);
       const sv_ = G.reduce((a, g) => a + g.value, 0), sc = G.reduce((a, g) => a + g.cost, 0), sw = G.reduce((a, g) => a + (g.wchg || 0), 0);
-      tb.append(el("tr", { class: "sub" }, el("td", { text: lab }), el("td"), el("td"), el("td", { class: "n", text: inr(sv_) }), el("td", { class: "n", text: delta(sv_ - sc, sc) }), el("td", { class: "n", text: delta(sw) })));
+      tb.append(el("tr", { class: "sub" }, el("td", { text: lab }), el("td"), el("td"), el("td", { class: "n" }, el("div", { text: inr(sv_) }), d1(oneDay(inB, bk))), el("td", { class: "n", text: delta(sv_ - sc, sc) }), el("td", { class: "n", text: delta(sw) })));
       grand += sv_;
       G.forEach(g => {
         const id = bk + "|" + g.key, open = !!S.openG[id], multi = g.lots.length > 1;
@@ -849,7 +870,7 @@
             el("div", { class: "meta" }, Array.from(g.apps).join(", ") + " · " + g.lots.length + (g.lots.length > 1 ? " purchases" : " purchase"), g.pending ? " · " : "", g.pending ? pill("waiting", "· allotment") : null)),
           el("td", { class: "n num", text: g.isAmt ? "—" : g.units.toLocaleString("en-IN", { maximumFractionDigits: 3 }) }),
           el("td", { class: "n" }, el("div", { class: "num", text: g.isAmt || g.price === null ? "—" : g.price.toLocaleString("en-IN", { maximumFractionDigits: 2 }) }), el("div", { class: "meta", text: g.isAmt ? "" : g.priceAt })),
-          el("td", { class: "n num" + (S.flash && g.pkey && S.flash[g.pkey] ? " flash-" + S.flash[g.pkey] : ""), text: inr(g.value) }),
+          el("td", { class: "n num" + (S.flash && g.pkey && S.flash[g.pkey] ? " flash-" + S.flash[g.pkey] : "") }, el("div", { text: inr(g.value) }), d1(oneDay(g.lots, bk))),
           el("td", { class: "n num " + (g.value - g.cost >= 0 ? "upc" : "dn"), text: delta(g.value - g.cost, g.cost) }),
           el("td", { class: "n num " + ((g.wchg || 0) >= 0 ? "upc" : "dn"), text: g.wchg === null ? "—" : delta(g.wchg) })));
         if (open) {
@@ -861,7 +882,7 @@
                 el("td", { class: "n num", text: amt ? "—" : (h.units * w).toLocaleString("en-IN", { maximumFractionDigits: 3 }) }),
                 el("td", { class: "n num", text: amt || !h.units ? "—" : (h.cost / h.units).toLocaleString("en-IN", { maximumFractionDigits: h.cost / h.units < 100 ? 4 : 2 }) }),
                 el("td", { class: "n num", text: inr(c) }),
-                el("td", { class: "n num", text: inr(v) }),
+                el("td", { class: "n num" }, el("div", { text: inr(v) }), d1(oneDay([h], bk))),
                 el("td", { class: "n num " + (v - c >= 0 ? "upc" : "dn"), text: delta(v - c, c) }));
             })));
           tb.append(el("tr", { class: "lot-panel" }, el("td", { colspan: 6 },
@@ -1097,7 +1118,8 @@
       });
       tb.append(el("tr", null,
         el("td", null, el("div", { text: s.sym }), el("div", { class: "meta", text: s.units + " sh" })),
-        el("td", { class: "n", text: p ? p.toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "—" }),
+        el("td", { class: "n" }, el("div", { text: p ? p.toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "—" }),
+          pr && pr.pc ? el("div", { class: "d1 " + (pr.p >= pr.pc ? "upc" : "dn"), text: "1D " + (pr.p >= pr.pc ? "▲ " : "▼ ") + pct(pr.p / pr.pc - 1, 2) }) : null),
         el("td", null, c.call ? el("span", { class: "tag", text: c.call }) : "—", c.date ? el("div", { class: "meta", text: niceDate(c.date) + " · " + (c.conviction || "") }) : null),
         el("td", { class: "n" }, c.target ? inr(c.target) : "—", c.target && p ? el("div", { class: "meta", text: pct(c.target / p - 1) }) : null),
         el("td", null, rules.length ? el("ul", { class: "list small" }, rules.map(r => el("li", { text: r.slice(0, 160) }))) : el("span", { class: "muted", text: "—" }))));
