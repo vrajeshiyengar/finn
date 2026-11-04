@@ -404,7 +404,7 @@
     const when = S.pricesAt ? new Date(S.pricesAt) : null;
     const age = when ? (Date.now() - when.getTime()) / 3600000 : 99;
     return el("div", { class: "top" },
-      el("div", null, el("div", { class: "brand-row" }, el("img", { src: "assets/finn-logo.png", alt: "", class: "brand-mark sm", width: 40, height: 40 }), el("h1", { text: "Finn" })),
+      el("div", null, el("div", { class: "brand-row" }, el("img", { src: "assets/finn-mark.png", alt: "", class: "brand-mark sm", width: 28, height: 28 }), el("h1", { text: "Finn" })),
         (function () { const L = liveLabel(); return el("div", { id: "live", class: "live" + (L.live ? " on" : "") + (L.stale ? " stale" : ""), role: "status" }, el("span", { class: "dot", "aria-hidden": "true" }), el("span", { text: L.text })); })()),
       el("div", { class: "top-actions" }, seg,
         signOutBtn()),
