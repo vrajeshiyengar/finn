@@ -410,7 +410,7 @@
       el("div", { class: "top-actions" }, seg,
         signOutBtn()),
       el("nav", { class: "jump", "aria-label": "Sections" },
-        [["goals", "Goals"], ["holdings", "Holdings"], ["checklist", "This month"], ["bank", "Bank"], ["calendar", "Calendar"], ["assetz", "Flat"], ["loan", "Loan"], ["cards", "Card"], ["stocks", "Stocks"], ["health", "Health"]]
+        [["goals", "Goals"], ["holdings", "Holdings"], ["checklist", "This month"], ["bank", "Bank"], ["calendar", "Calendar"], ["flat", "Flat"], ["loan", "Loan"], ["cards", "Card"], ["stocks", "Stocks"], ["health", "Health"]]
           .map(([id, lab]) => el("a", { href: "#" + id, onclick: (e) => { e.preventDefault(); const t = document.getElementById(id); if (t) { if (t.tagName === "DETAILS") t.open = true; t.scrollIntoView({ behavior: "smooth", block: "start" }); } }, text: lab }))));
   }
 
@@ -470,7 +470,7 @@
       ? (gap < 0 ? short(-gap) + " behind plan, inside the ±" + Math.round(band * 100) + "% band" : short(gap) + " ahead of plan")
       : (gap < 0 ? short(-gap) + " behind plan: outside the band" : short(gap) + " ahead of plan");
     const primary = el("div", { class: "kpi primary" },
-      el("div", { class: "lab", text: "Book vs 5-5-15 plan" }),
+      el("div", { class: "lab", text: "Book vs " + (S.book.plan.name || "plan") }),
       el("div", { class: "kpi-head" }, el("span", { class: "big", "data-count": gp, "data-fmt": "pct", text: pct(gp) }), pill(status)),
       el("div", { class: "sub", text: headline }),
       d1(S._oneDayBook),
@@ -518,9 +518,9 @@
         else if (below && d < 0.03) items.push({ sev: 1, what: st.sym + " is " + pct(d) + " above its exit line " + lvl, act: "If it closes below: " + w.action, jump: "stocks" });
       });
     });
-    // TDS that Assetz has asked for
+    // TDS the builder has asked for
     (((S.book.ledgers || {}).home_tds || {}).requested || []).forEach(r =>
-      items.push({ sev: 2, what: "Pay TDS " + inr(r.amount) + " for milestone " + r.milestone + " (2 × " + inr(r.amount / 2) + ")", act: "File Form 26QB for both of you; then tell Finn", jump: "goals" }));
+      items.push({ sev: 2, what: "Pay TDS " + inr(r.amount) + " for milestone " + r.milestone, act: (S.book.plan.tds_action || "File the TDS forms") + "; then tell Finn", jump: "goals" }));
     // salary money not yet invested
     const lp = leftParts(monthData(mkNow));
     if (lp.salary > 0) items.push({ sev: 2, what: inr(lp.salary) + " of " + monthLabel(mkNow) + " salary money is not invested yet", act: "See the month checklist", jump: "checklist" });
@@ -697,7 +697,7 @@
       const gap = v - t;
       const goal = g.target || (b.key === "home_tds" && g.outflows ? g.outflows.reduce((a, o) => a + o[1], 0) : null);
       const goalLine = b.key === "retirement" ? "Goal " + short(goal) + " · plan path " + short(g.projection_dec_2036) + " by Dec 2036"
-        : b.key === "home_tds" ? (function () { const Lt = (S.book.ledgers || {}).home_tds || {}; if ((Lt.requested || []).length) return short(Lt.requested.reduce((a, r) => a + r.amount, 0)) + " TDS asked for by Assetz, due soon · "; return Lt.provisioned ? short(Lt.provisioned) + " provisioned for a TDS ask not received yet · " : ""; })() + "covers the next " + (g.outflows || []).length + " TDS payments"
+        : b.key === "home_tds" ? (function () { const Lt = (S.book.ledgers || {}).home_tds || {}; if ((Lt.requested || []).length) return short(Lt.requested.reduce((a, r) => a + r.amount, 0)) + " TDS asked for by the builder, due soon · "; return Lt.provisioned ? short(Lt.provisioned) + " provisioned for a TDS ask not received yet · " : ""; })() + "covers the next " + (g.outflows || []).length + " TDS payments"
         : goal ? "Goal " + short(goal) + (g.date ? " by " + niceDate(g.date) : "") : b.note;
       const open = !!S.openB[b.key];
       const toggle = () => { S.openB[b.key] = !open; render(); };
@@ -717,7 +717,7 @@
         const extra = [];
         if (b.key === "home_fund") {
           const st = S.book.plan.stress || {}; const k = Object.keys(st)[0];
-          extra.push(el("p", { class: "meta", text: "Funded " + Math.round((S.book.plan.funded_now || 0) * 100) + "% of the 2029 bills, counting the money still to come" + (k ? " · if markets fall 20% in Mar 2029, short by " + short(st[k]) : "") }));
+          extra.push(el("p", { class: "meta", text: "Funded " + Math.round((S.book.plan.funded_now || 0) * 100) + "% of the goal, counting the money still to come" + (k ? " · stress case (" + k + "): short by " + short(st[k]) : "") }));
         }
         if (b.key === "loan_reserve" && g.alt_note) extra.push(el("p", { class: "meta", text: g.alt_note }));
         wrap.append(el("div", { class: "g-panel" },
@@ -729,7 +729,7 @@
     const adj = Array.from(new Set((S.book.plan.active_adjustments || []).map(a => a.replace(/ \(money still sits[^)]*\)/, ""))));
     return el("section", { class: "view", id: "goals" },
       el("header", null, el("div", null, el("div", { class: "eyebrow", text: "Goals" }), el("h2", { text: goalsInsight(bt, T) }),
-        el("div", { class: "meta", text: "Against the 5-5-15 plan for " + S.book.plan.target_month + " · on track within ±" + Math.round(band * 100) + "% · open a bucket for its money in and out" }))),
+        el("div", { class: "meta", text: "Against " + (S.book.plan.name || "the plan") + " for " + S.book.plan.target_month + " · on track within ±" + Math.round(band * 100) + "% · open a bucket for its money in and out" }))),
       gapWaterfall(bt, T, book, tgtTotal),
       wrap,
       adj.length ? el("p", { class: "meta", text: "Plan timing: " + adj.join("; ") }) : null);
@@ -933,7 +933,7 @@
     const lp = leftParts(m);
     return el("section", { class: "view", id: "checklist" },
       el("header", null, el("div", null, el("div", { class: "eyebrow", text: "This month" }), el("h2", { text: (function () { const o = leftParts(m); return o.salary > 0 ? inr(o.salary) + " of " + monthLabel(mk) + " salary still to invest" : (m.generated ? monthLabel(mk) + ": " + inr([].concat(m.lines).filter(l => l.kind === "invest").reduce((a, l) => a + (l.planned || 0), 0)) + " to invest from salary" : "✓ All of " + monthLabel(mk) + "'s salary money is invested") + (o.other ? " · " + short(o.other) + " of proceeds due" : ""); })() })),
-        el("span", { class: "q", text: m.generated ? "From the 5-5-15 plan (no actuals yet)" + (m.note ? " · " + m.note.slice(0, 120) : "") : "Plan lines and what actually happened" })),
+        el("span", { class: "q", text: m.generated ? "From " + (S.book.plan.name || "the plan") + " (no actuals yet)" + (m.note ? " · " + m.note.slice(0, 120) : "") : "Plan lines and what actually happened" })),
       box,
       el("div", { class: "foot" }, el("span", { text: "Salary money left to invest in " + monthLabel(mk) }), el("span", { class: "num", text: inr(lp.salary) })),
       lp.other ? el("div", { class: "foot", style: "border-top-width:1px;font-weight:600" }, el("span", { text: "Redemption / sale proceeds still to deploy" }), el("span", { class: "num", text: inr(lp.other) })) : null);
@@ -1008,7 +1008,7 @@
       el("summary", null, el("div", null, el("h2", { text: title }), q ? el("div", { class: "q", text: q }) : null)), body);
   }
   function detailsFlat() {
-    const A = S.book.assetz, ms = A.milestones;
+    const A = S.book.property, ms = A.milestones;
     const paid = ms.filter(m => m.paid), tot = ms.reduce((a, m) => a + (m.total || 0), 0), pt = paid.reduce((a, m) => a + (m.total || 0), 0);
     const next = ms.filter(m => !m.paid).slice(0, 4);
     const tb = el("tbody");
@@ -1021,7 +1021,7 @@
         el("td", { class: "n", text: niceDate(m.planned) }),
         el("td", { class: "n" }, m.actual ? niceDate(m.actual) : "—", slip !== null ? el("div", { class: "small " + (slip > 0 ? "" : "muted"), text: slip === 0 ? "on time" : (slip > 0 ? slip + " d late" : -slip + " d early") }) : null),
         el("td", { class: "n", text: inr(m.total) }),
-        el("td", { class: "n" }, el("div", { text: inr(m.tds) }), el("div", { class: "meta", text: inr((m.tds || 0) / 2) + " each" })),
+        el("td", { class: "n" }, el("div", { text: inr(m.tds) }), ((S.book.property.shares || 1) > 1 ? el("div", { class: "meta", text: inr((m.tds || 0) / S.book.property.shares) + " each" }) : null)),
         el("td", { class: "n", text: inr(m.net_due) }),
         el("td", null, pill(m.paid ? "done" : "upcoming"))));
     });
@@ -1037,12 +1037,12 @@
           p.check ? el("div", { class: "meta", text: p.check.slice(0, 80) }) : el("div", { class: "meta", text: "proof not checked yet" }))));
     });
     const extras = A.extras.map(x => el("li", null, x.name + ": " + inr(x.amount) + (x.planned ? " (" + niceDate(x.planned) + ")" : "")));
-    return det("assetz", A.title || "The flat", paid.length + " of " + ms.length + " milestones paid · " + short(pt) + " of " + short(tot) + " · next: " + (next[0] ? next[0].name + " (" + niceDate(next[0].planned) + ")" : "—"),
+    return det("flat", A.title || "The flat", paid.length + " of " + ms.length + " milestones paid · " + short(pt) + " of " + short(tot) + " · next: " + (next[0] ? next[0].name + " (" + niceDate(next[0].planned) + ")" : "—"),
       el("div", null,
         el("div", { class: "strip" },
           tile("Paid so far", short(pt), [Math.round(pt / tot * 100) + "% of the price"]),
           tile("Still to come", short(tot - pt), [next.length + " near-term milestones"]),
-          tile("Next TDS", next[0] ? inr(next[0].tds) : "—", [next[0] ? "2 × " + inr(next[0].tds / 2) + " · " + niceDate(next[0].planned) : ""])),
+          tile("Next TDS", next[0] ? inr(next[0].tds) : "—", [next[0] ? niceDate(next[0].planned) : ""])),
         el("div", { class: "row-between" }, el("h3", { class: "meta", text: "PAYMENT PLAN" }),
           el("button", { type: "button", class: "chip", "aria-pressed": showPaid ? "true" : "false", onclick: () => { S.showPaid = !showPaid; render(); }, text: showPaid ? "Hide paid (" + paid.length + ")" : "Show paid (" + paid.length + ")" })),
         el("div", { class: "tw" }, el("table", null, el("thead", null, el("tr", null, ["Milestone", "Planned", "Actual", "Total", "TDS 1%", "Net to builder", ""].map((h, i) => el("th", { class: i === 0 || i === 6 ? "" : "n", text: h })))), tb)),
